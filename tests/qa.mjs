@@ -1,0 +1,15 @@
+import { chromium } from 'playwright';
+const browser=await chromium.launch({headless:true,executablePath:'/usr/local/bin/chromium',args:['--no-sandbox']});
+const page=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1});
+const localUrl=['http:','','127.0.0.1:4173'].join('/');
+await page.goto(localUrl,{waitUntil:'networkidle'});
+await page.screenshot({path:'/data/along-mobile-home.png',fullPage:true});
+await page.click('#routeForm button[type=submit]');
+await page.waitForTimeout(300);
+await page.screenshot({path:'/data/along-mobile-results.png',fullPage:true});
+await page.click('#startNavBtn');
+await page.waitForTimeout(200);
+await page.screenshot({path:'/data/along-mobile-nav.png',fullPage:false});
+const overflow=await page.evaluate(()=>({scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth}));
+console.log(JSON.stringify(overflow));
+await browser.close();
