@@ -11,3 +11,5 @@
 - Shares visual design references (screenshots/mockups) when they want specific styling, expecting pixel-accurate reproduction of the shown design. Confidence: 0.85
 - Prefers light/white themed dialogs and modals with clean rounded styling; explicitly rejects dark-mode UI for settings panels. Confidence: 0.8
 - Prefers consolidating related functionality into a single existing dialog (e.g., merging a "Report an issue" interface as a tab inside the profile/settings dialog) rather than having separate dialogs or floating action buttons for each feature. Confidence: 0.85
+- Expects hover states on buttons to have clearly visible contrast against their background; notices and flags when hover feedback is too subtle or invisible (e.g., near-white hover on white background). Confidence: 0.75
+- Prefers tools/APIs where they already have credentials or access, favoring pragmatic adoption over the theoretically best option. Confidence: 0.75
