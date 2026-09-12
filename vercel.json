@@ -1,1 +1,11 @@
-{"rewrites":[{"source":"/api/tts","destination":"/api/tts"}],"headers":[{"source":"/(.*)","headers":[{"key":"Referrer-Policy","value":"strict-origin-when-cross-origin"}]}]}
+{
+  "rewrites": [{ "source": "/api/tts", "destination": "/api/tts" }],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
+      ]
+    }
+  ]
+}
