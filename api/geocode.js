@@ -13,6 +13,12 @@ const nameFromPhoton = (p) =>
     .filter((v, i, a) => a.indexOf(v) === i)
     .slice(0, 4)
     .join(", ");
+// FIX 10: abort upstream fetches after 4 s so a slow provider can't block the serverless function
+const withTimeout = (ms) => {
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), ms);
+  return ctrl.signal;
+};
 module.exports = async function handler(req, res) {
   if (req.method !== "GET")
     return json(res, 405, { error: "Method not allowed" });
@@ -31,6 +37,7 @@ module.exports = async function handler(req, res) {
           "User-Agent": "Along-Abuja-MVP/1.0",
           "Accept-Language": "en-NG,en",
         },
+        signal: withTimeout(4000),
       });
       if (!r.ok) throw Error("reverse failed");
       const x = await r.json();
@@ -63,6 +70,7 @@ module.exports = async function handler(req, res) {
           "User-Agent": "Along-Abuja-MVP/1.0",
           "Accept-Language": "en-NG,en",
         },
+        signal: withTimeout(4000),
       }),
       items = [];
     if (r.ok)
@@ -81,7 +89,7 @@ module.exports = async function handler(req, res) {
         lon: "7.4914",
         lang: "en",
       });
-      r = await fetch(p);
+      r = await fetch(p, { signal: withTimeout(4000) });
       if (r.ok)
         items = (await r.json()).features
           .filter((x) => x.properties.countrycode === "NG")

@@ -1,7 +1,8 @@
+const { Readable } = require("node:stream");
 const VOICES = new Set(["en-NG-EzinneNeural", "en-NG-AbeoNeural"]);
 const escapeXml = (s) =>
   s.replace(
-    /[<>&'\"]/g,
+    /[<>&'"]/g,
     (c) =>
       ({
         "<": "&lt;",
@@ -45,7 +46,8 @@ module.exports = async function handler(req, res) {
     return res
       .status(response.status)
       .json({ error: "Speech synthesis failed" });
+  // FIX 11: pipe response body directly — avoids buffering the full MP3 in serverless memory
   res.setHeader("Content-Type", "audio/mpeg");
   res.setHeader("Cache-Control", "private, max-age=86400");
-  res.send(Buffer.from(await response.arrayBuffer()));
+  Readable.fromWeb(response.body).pipe(res);
 };

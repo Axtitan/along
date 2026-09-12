@@ -25,6 +25,8 @@ const HUBS = [
   ["dutse", "Dutse Alhaji", 9.1328, 7.3907],
 ].map(([id, name, lat, lng]) => ({ id, name, lat, lng, source: "prototype" }));
 const H = Object.fromEntries(HUBS.map((h) => [h.id, h]));
+// FIX 15: pre-lowercase hub names so localMatch avoids toLowerCase on every keystroke
+const HUB_LOWER = HUBS.map((h) => ({ hub: h, lower: h.name.toLowerCase() }));
 const LINKS = [
   ["berger", "utako", "bus", 250, 350, 7],
   ["utako", "jabi", "bus", 250, 400, 9],
@@ -69,6 +71,13 @@ const LINKS = [
   confidence: i < 12 ? "High" : "Medium",
   source: "prototype",
 }));
+// FIX 3-4: build adjacency list once at startup — O(degree) neighbour lookup in graphRoute
+const ADJ = {};
+HUBS.forEach((h) => (ADJ[h.id] = []));
+LINKS.forEach((e) => {
+  ADJ[e.a].push({ ...e, neighbor: e.b });
+  ADJ[e.b].push({ ...e, neighbor: e.a });
+});
 const state = {
   origin: null,
   destination: null,
@@ -139,6 +148,10 @@ L.control
     { collapsed: true, position: "topright" },
   )
   .addTo(map);
+// FIX 8: ResizeObserver fires exactly when the map container changes size — replaces all setTimeout(invalidateSize) calls
+new ResizeObserver(() => map.invalidateSize()).observe(
+  document.getElementById("map"),
+);
 function km(a, b) {
   const R = 6371,
     p = Math.PI / 180,
@@ -149,10 +162,13 @@ function km(a, b) {
       Math.cos(a.lat * p) * Math.cos(b.lat * p) * Math.sin(dLng / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(s));
 }
+// FIX 2: compute distance once per candidate, not twice when a new best is found
 function nearestHub(p) {
   return HUBS.reduce(
-    (best, h) =>
-      km(p, h) < best.distance ? { hub: h, distance: km(p, h) } : best,
+    (best, h) => {
+      const d = km(p, h);
+      return d < best.distance ? { hub: h, distance: d } : best;
+    },
     { hub: HUBS[0], distance: Infinity },
   );
 }
@@ -169,6 +185,7 @@ function showToast(msg) {
   clearTimeout(t.timer);
   t.timer = setTimeout(() => t.classList.remove("show"), 3000);
 }
+// FIX 3-4: use pre-built ADJ adjacency list — O(degree) per relaxation instead of O(E)
 function graphRoute(start, end, preference = "fast") {
   const dist = {},
     prev = {},
@@ -180,8 +197,8 @@ function graphRoute(start, end, preference = "fast") {
     if (!Number.isFinite(dist[u])) break;
     queue.delete(u);
     if (u === end) break;
-    for (const e of LINKS.filter((x) => x.a === u || x.b === u)) {
-      const v = e.a === u ? e.b : e.a;
+    for (const e of ADJ[u]) {
+      const v = e.neighbor;
       if (!queue.has(v)) continue;
       const weight =
         preference === "cheap"
@@ -207,10 +224,11 @@ function graphRoute(start, end, preference = "fast") {
   }
   return edges;
 }
-function buildJourney(origin, destination, preference, label) {
-  const a = nearestHub(origin),
-    b = nearestHub(destination),
-    edges = graphRoute(a.hub.id, b.hub.id, preference) || [];
+// FIX 1: accept pre-resolved hub objects (a, b) so submitRoute can share a single nearestHub call across all 3 preference builds
+function buildJourney(origin, destination, preference, label, a, b) {
+  a = a || nearestHub(origin);
+  b = b || nearestHub(destination);
+  const edges = graphRoute(a.hub.id, b.hub.id, preference) || [];
   const legs = [];
   if (a.distance > 0.05)
     legs.push({
@@ -291,16 +309,22 @@ function buildJourney(origin, destination, preference, label) {
     destination,
   };
 }
+// FIX 6: cache geocode results to dedupe repeat queries within a session
+const geocodeCache = new Map();
 async function geocode(query) {
   const clean = query.trim();
+  if (geocodeCache.has(clean)) return geocodeCache.get(clean);
   try {
     const u = new URL("/api/geocode", location.origin);
     u.searchParams.set("q", clean);
     const r = await fetch(u);
     if (r.ok) {
       const x = await r.json();
-      if (x.results?.length)
-        return x.results.map((v) => ({ ...v, type: "search" }));
+      if (x.results?.length) {
+        const results = x.results.map((v) => ({ ...v, type: "search" }));
+        geocodeCache.set(clean, results);
+        return results;
+      }
     }
   } catch {}
   try {
@@ -322,7 +346,10 @@ async function geocode(query) {
         lng: +x.lon,
         type: "search",
       }));
-      if (items.length) return items;
+      if (items.length) {
+        geocodeCache.set(clean, items);
+        return items;
+      }
     }
   } catch {}
   try {
@@ -335,8 +362,8 @@ async function geocode(query) {
       lang: "en",
     });
     const r = await fetch(u);
-    if (r.ok)
-      return (await r.json()).features
+    if (r.ok) {
+      const items = (await r.json()).features
         .filter((x) => x.properties.countrycode === "NG")
         .map((x) => ({
           name: [
@@ -354,6 +381,9 @@ async function geocode(query) {
           lng: x.geometry.coordinates[0],
           type: "search",
         }));
+      if (items.length) geocodeCache.set(clean, items);
+      return items;
+    }
   } catch {}
   return [];
 }
@@ -382,9 +412,12 @@ async function reverseGeocode(lat, lng) {
     return "Dropped pin";
   }
 }
+// FIX 15: use pre-lowercased array — avoids .toLowerCase() on every hub per keystroke
 function localMatch(q) {
-  q = q.toLowerCase().trim();
-  return HUBS.filter((h) => h.name.toLowerCase().includes(q)).slice(0, 5);
+  const lq = q.toLowerCase().trim();
+  return HUB_LOWER.filter((x) => x.lower.includes(lq))
+    .map((x) => x.hub)
+    .slice(0, 5);
 }
 let searchTimer;
 function setupSearch(input, resultEl, key) {
@@ -445,6 +478,8 @@ async function resolveInput(input, key) {
   input.value = found[0].name;
   return (state[key] = found[0]);
 }
+// FIX 7: cache rendered HTML per route index; cleared on each new submitRoute
+const renderedRoutes = [];
 async function submitRoute() {
   const btn = $("#routeForm button[type=submit]"),
     label = btn.querySelector(".btn-label");
@@ -461,11 +496,15 @@ async function submitRoute() {
       throw Error(
         "Along currently supports journeys connected to the Abuja network.",
       );
+    // FIX 1: resolve hubs once, pass to all three buildJourney calls
+    const a = nearestHub(o),
+      b = nearestHub(d);
     state.routes = [
-      buildJourney(o, d, "fast", "Fastest"),
-      buildJourney(o, d, "cheap", "Cheapest"),
-      buildJourney(o, d, "simple", "Fewer changes"),
+      buildJourney(o, d, "fast", "Fastest", a, b),
+      buildJourney(o, d, "cheap", "Cheapest", a, b),
+      buildJourney(o, d, "simple", "Fewer changes", a, b),
     ];
+    renderedRoutes.length = 0; // FIX 7: clear HTML cache for new origin/destination
     state.selected = 0;
     $("#plannerPanel").hidden = true;
     $("#resultsPanel").hidden = false;
@@ -496,6 +535,7 @@ function renderTabs() {
       }),
   );
 }
+// FIX 7: build route HTML once per index; FIX 8: no setTimeout — ResizeObserver handles invalidateSize
 function renderRoute() {
   const r = state.routes[state.selected];
   if (state.routeLayer) map.removeLayer(state.routeLayer);
@@ -530,17 +570,20 @@ function renderRoute() {
   );
   state.routeLayer = L.featureGroup(group).addTo(map);
   map.fitBounds(state.routeLayer.getBounds().pad(0.22));
-  const legs = r.legs
-    .map(
-      (l) =>
-        `<div class="leg ${l.mode !== "walk" ? "transport" : ""}"><div class="leg-icon">${modeIcon(l.mode)}</div><div><h3>${l.mode[0].toUpperCase() + l.mode.slice(1)} · ${l.from} → ${l.to}</h3><p>${l.text}</p>${l.fare ? `<p class="fare">Approx. ${money(l.fare[0])}–${money(l.fare[1])}</p>` : ""}</div></div>`,
-    )
-    .join("");
-  $("#routeSummary").innerHTML =
-    `<div class="summary-card"><div class="metrics"><div class="metric"><b>${r.time} min</b><span>Total time</span></div><div class="metric"><b>${money(r.fare[0])}–${money(r.fare[1])}</b><span>Fare range</span></div><div class="metric"><b>${r.transfers}</b><span>Transfers</span></div><div class="metric"><b>${r.walk}m</b><span>Walking</span></div></div><div class="modes">${r.modes.map((m) => m[0].toUpperCase() + m.slice(1)).join(" → ")}</div><span class="confidence">● ${r.confidence} confidence · prototype</span></div><div class="timeline">${legs}</div><p class="fare-note">Fares and route availability can vary. Confirm with the driver before entering.</p><button class="primary-btn" id="startNavBtn">Start navigation <span>→</span></button>`;
+  if (!renderedRoutes[state.selected]) {
+    const legs = r.legs
+      .map(
+        (l) =>
+          `<div class="leg ${l.mode !== "walk" ? "transport" : ""}"><div class="leg-icon">${modeIcon(l.mode)}</div><div><h3>${l.mode[0].toUpperCase() + l.mode.slice(1)} · ${l.from} → ${l.to}</h3><p>${l.text}</p>${l.fare ? `<p class="fare">Approx. ${money(l.fare[0])}–${money(l.fare[1])}</p>` : ""}</div></div>`,
+      )
+      .join("");
+    renderedRoutes[state.selected] =
+      `<div class="summary-card"><div class="metrics"><div class="metric"><b>${r.time} min</b><span>Total time</span></div><div class="metric"><b>${money(r.fare[0])}–${money(r.fare[1])}</b><span>Fare range</span></div><div class="metric"><b>${r.transfers}</b><span>Transfers</span></div><div class="metric"><b>${r.walk}m</b><span>Walking</span></div></div><div class="modes">${r.modes.map((m) => m[0].toUpperCase() + m.slice(1)).join(" → ")}</div><span class="confidence">● ${r.confidence} confidence · prototype</span></div><div class="timeline">${legs}</div><p class="fare-note">Fares and route availability can vary. Confirm with the driver before entering.</p><button class="primary-btn" id="startNavBtn">Start navigation <span>→</span></button>`;
+  }
+  $("#routeSummary").innerHTML = renderedRoutes[state.selected];
   $("#startNavBtn").onclick = startNavigation;
-  setTimeout(() => map.invalidateSize(), 80);
 }
+// FIX 8: removed setTimeout(invalidateSize) — ResizeObserver covers panel transitions
 function startNavigation() {
   state.navStep = 0;
   state.paused = false;
@@ -550,7 +593,6 @@ function startNavigation() {
   $("#voiceSelect").value = state.voiceName;
   updateNav();
   speak("Navigation started. " + state.routes[state.selected].legs[0].text);
-  setTimeout(() => map.invalidateSize(), 100);
 }
 function updateNav() {
   const r = state.routes[state.selected],
@@ -575,6 +617,7 @@ function updateNav() {
     `${Math.max(12, (state.navStep / r.legs.length) * 100)}%`;
   map.fitBounds(L.latLngBounds(l.coords).pad(0.8));
 }
+// FIX 9: revoke object URL after TTS audio finishes to prevent memory leaks
 async function speak(text) {
   if (!state.voice) return;
   const cloud = state.voiceName !== "browser";
@@ -586,7 +629,11 @@ async function speak(text) {
         body: JSON.stringify({ text, voice: state.voiceName }),
       });
       if (r.ok) {
-        const audio = new Audio(URL.createObjectURL(await r.blob()));
+        const src = URL.createObjectURL(await r.blob());
+        const audio = new Audio(src);
+        audio.addEventListener("ended", () => URL.revokeObjectURL(src), {
+          once: true,
+        });
         await audio.play();
         return;
       }
@@ -665,13 +712,14 @@ map.on("click", async (e) => {
     .bindTooltip(key === "origin" ? "Origin" : "Destination")
     .openTooltip();
 });
+// BONUS FIX: use correct GeolocationCoordinates properties (latitude/longitude, not x/y)
 $("#locateBtn").onclick = () => {
   if (!navigator.geolocation)
     return showToast("Location is unavailable on this device.");
   showToast("Finding your location…");
   navigator.geolocation.getCurrentPosition(
     async (p) => {
-      const { x: lng, y: lat } = p.coords;
+      const { latitude: lat, longitude: lng } = p.coords;
       const name = await reverseGeocode(lat, lng);
       state.origin = { name, lat, lng, type: "gps" };
       originInput.value = name;
@@ -685,10 +733,10 @@ $("#locateBtn").onclick = () => {
     { enableHighAccuracy: true, timeout: 8000 },
   );
 };
+// FIX 8: removed setTimeout(invalidateSize) from editTripBtn and closeNavBtn
 $("#editTripBtn").onclick = () => {
   $("#resultsPanel").hidden = true;
   $("#plannerPanel").hidden = false;
-  setTimeout(() => map.invalidateSize(), 80);
 };
 $("#nextStepBtn").onclick = () => {
   if (state.paused) return showToast("Resume the trip first.");
@@ -713,7 +761,6 @@ $("#closeNavBtn").onclick = () => {
   $("#navigationPanel").hidden = true;
   $("#resultsPanel").hidden = false;
   speechSynthesis?.cancel();
-  setTimeout(() => map.invalidateSize(), 80);
 };
 $("#voiceSelect").onchange = (e) => {
   state.voiceName = e.target.value;
@@ -738,4 +785,5 @@ $("#reportForm").addEventListener("submit", () =>
 );
 if ("serviceWorker" in navigator)
   navigator.serviceWorker.register("./sw.js").catch(() => {});
-setTimeout(() => map.invalidateSize(), 100);
+// FIX 8: use requestAnimationFrame for the initial invalidateSize — guarantees layout is settled
+requestAnimationFrame(() => map.invalidateSize());
