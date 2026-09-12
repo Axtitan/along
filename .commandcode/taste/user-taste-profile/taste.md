@@ -13,3 +13,4 @@
 - Prefers consolidating related functionality into a single existing dialog (e.g., merging a "Report an issue" interface as a tab inside the profile/settings dialog) rather than having separate dialogs or floating action buttons for each feature. Confidence: 0.85
 - Expects hover states on buttons to have clearly visible contrast against their background; notices and flags when hover feedback is too subtle or invisible (e.g., near-white hover on white background). Confidence: 0.75
 - Prefers tools/APIs where they already have credentials or access, favoring pragmatic adoption over the theoretically best option. Confidence: 0.75
+- Proactively concerns themselves with API quota conservation and cost optimization for third-party services; asks about caching/persistence strategies to minimize paid API calls. Confidence: 0.8
