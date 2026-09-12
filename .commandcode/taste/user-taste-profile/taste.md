@@ -1,0 +1,15 @@
+# User Taste Profile
+- Prefers creating git branches for major changes and migrations. Confidence: 0.85
+- Wants thorough codebase research done before making changes or committing to an approach. Confidence: 0.9
+- Prefers having tool/approach options presented for selection rather than having decisions made unilaterally. Confidence: 0.9
+- Prepares scaffolding/boilerplate in a test directory before handing off major migration work. Confidence: 0.75
+- Prefers provider-agnostic, switchable service abstractions over hardcoded external service integrations (e.g., make TTS swappable between Azure/Google/OpenAI by switching model names). Confidence: 0.85
+- Prefers modern, well-structured frameworks (Next.js, Tailwind CSS, shadcn/ui) over vanilla/unstructured approaches. Confidence: 0.9
+- Values specific, purpose-chosen libraries for each layer of the stack (e.g., GSAP for animations, driver.js for onboarding, Leaflet for maps). Confidence: 0.85
+- Communicates bugs as minimal symptom statements ("X doesn't work") without reproduction steps or extra context; expects the assistant to diagnose from the codebase. Confidence: 0.85
+- Bundles multiple related UI/layout changes into a single request (e.g., move button X, add zoom controls, restore settings button, bring back GPS — all in one message) rather than requesting changes incrementally. Confidence: 0.8
+- Shares visual design references (screenshots/mockups) when they want specific styling, expecting pixel-accurate reproduction of the shown design. Confidence: 0.85
+- Prefers light/white themed dialogs and modals with clean rounded styling; explicitly rejects dark-mode UI for settings panels. Confidence: 0.8
+- Prefers consolidating related functionality into a single existing dialog (e.g., merging a "Report an issue" interface as a tab inside the profile/settings dialog) rather than having separate dialogs or floating action buttons for each feature. Confidence: 0.85
+- Expects hover states on buttons to have clearly visible contrast against their background; notices and flags when hover feedback is too subtle or invisible (e.g., near-white hover on white background). Confidence: 0.75
+- Prefers tools/APIs where they already have credentials or access, favoring pragmatic adoption over the theoretically best option. Confidence: 0.75
