@@ -1,4 +1,5 @@
 const { Readable } = require("node:stream");
+//azure Nigerian voices
 const VOICES = new Set(["en-NG-EzinneNeural", "en-NG-AbeoNeural"]);
 const escapeXml = (s) =>
   s.replace(
