@@ -118,7 +118,10 @@ function RouteOverlay() {
     if (!r) return
 
     const group: L.Layer[] = []
+    const fg = L.featureGroup().addTo(map)
+    layerRef.current = fg
 
+    // Render straight lines immediately as fallback
     r.legs.forEach((l) => {
       const color =
         l.mode === "walk"
@@ -143,11 +146,73 @@ function RouteOverlay() {
       L.marker([r.destination.lat, r.destination.lng], { icon: destIcon() }).bindTooltip("Destination"),
     )
 
-    const fg = L.featureGroup(group).addTo(map)
-    layerRef.current = fg
+    group.forEach((l) => l.addTo(fg))
     map.fitBounds(fg.getBounds().pad(0.22))
 
+    // Fetch ORS road geometry for each leg asynchronously
+    let cancelled = false
+    const profiles: Record<string, string> = { walk: "foot-walking", bus: "driving-car", keke: "driving-car", taxi: "driving-car" }
+
+    ;(async () => {
+      const legGeometries = await Promise.all(
+        r.legs.map(async (l) => {
+          const profile = profiles[l.mode] || "foot-walking"
+          try {
+            const res = await fetch("/api/directions", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                coordinates: l.coords.map((c) => [c[1], c[0]]),
+                profile,
+              }),
+            })
+            if (res.ok) {
+              const data = await res.json()
+              const coords = data.geometry?.coordinates as [number, number][] | undefined
+              if (coords && coords.length > 0) {
+                return coords.map((c) => [c[1], c[0]] as [number, number])
+              }
+            }
+          } catch {}
+          return l.coords
+        }),
+      )
+
+      if (cancelled) return
+
+      // Replace straight lines with road geometry
+      group.forEach((l) => fg.removeLayer(l))
+      group.length = 0
+
+      r.legs.forEach((l, i) => {
+        const color =
+          l.mode === "walk"
+            ? "#171817"
+            : l.mode === "bus"
+              ? "#8067e6"
+              : l.mode === "keke"
+                ? "#d48635"
+                : "#65706a"
+        const polyline = L.polyline(legGeometries[i], {
+          color,
+          weight: l.mode === "walk" ? 5 : 7,
+          dashArray: l.mode === "walk" ? "3 10" : undefined,
+          opacity: 0.95,
+        })
+        polyline.addTo(fg)
+        group.push(polyline)
+      })
+
+      group.push(L.marker([r.origin.lat, r.origin.lng], { icon: originIcon() }).bindTooltip("Start"))
+      group.push(
+        L.marker([r.destination.lat, r.destination.lng], { icon: destIcon() }).bindTooltip("Destination"),
+      )
+      group.forEach((l) => l.addTo(fg))
+      map.fitBounds(fg.getBounds().pad(0.22))
+    })()
+
     return () => {
+      cancelled = true
       if (layerRef.current) {
         map.removeLayer(layerRef.current)
         layerRef.current = null
