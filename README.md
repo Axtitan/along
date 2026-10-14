@@ -57,15 +57,17 @@ npm run dev
 Open http://localhost:3000. No environment variables are required. `.env.example` lists optional
 free-tier keys (OpenRouteService for route lines, Azure Speech for Nigerian voices).
 
-Other scripts: `npm run build`, `npm run lint`, `npm run typecheck`, and `npm run build:places`
-to refresh the offline place index from OpenStreetMap (re-run every few months). To include Overture
-places and streets (recommended):
+Other scripts: `npm run build`, `npm run lint`, `npm run typecheck`.
+
+To refresh the offline place index (OpenStreetMap + Overture Maps) every few months:
 
 ```bash
-pip install duckdb
-python scripts/fetch-overture.py overture-abuja.json
-node scripts/build-places.mjs --overture overture-abuja.json
+pip install -r scripts/requirements.txt
+npm run update:places
 ```
+
+`update:places` runs `fetch:overture` (Overture places via DuckDB, ~15 s) then `build:places`
+(OpenStreetMap via the Overpass API, which retries automatically when the free server is busy).
 
 ## Structure
 

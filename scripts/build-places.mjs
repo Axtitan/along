@@ -180,7 +180,11 @@ for (const [key, j] of Object.entries(data)) {
 // OSM doesn't have yet (e.g. "Plot 1088 Isiyaku Ismaila Crescent, Wuye").
 
 const overtureIdx = process.argv.indexOf("--overture")
-const overture = overtureIdx > 0 ? JSON.parse(fs.readFileSync(process.argv[overtureIdx + 1], "utf8")) : []
+const overtureFile = overtureIdx > 0 ? process.argv[overtureIdx + 1] : null
+if (overtureFile && !fs.existsSync(overtureFile)) {
+  console.warn(`No ${overtureFile} — run "npm run fetch:overture" first to include Overture places. Continuing with OpenStreetMap only.`)
+}
+const overture = overtureFile && fs.existsSync(overtureFile) ? JSON.parse(fs.readFileSync(overtureFile, "utf8")) : []
 
 const SUFFIX = {
   street: "Street", st: "Street", str: "Street",
