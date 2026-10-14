@@ -10,7 +10,9 @@
     "lint": "eslint",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc --noEmit",
-    "build:places": "node scripts/build-places.mjs"
+    "fetch:overture": "python scripts/fetch-overture.py overture-abuja.json",
+    "build:places": "node scripts/build-places.mjs --overture overture-abuja.json",
+    "update:places": "npm run fetch:overture && npm run build:places"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
