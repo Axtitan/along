@@ -6,8 +6,11 @@ a bus or shared cab "along" the corridor, and a short hop to the door. It's free
 ## What it does
 
 - **Search that knows Abuja, even with typos.** Suggestions appear from the first letter, from an
-  offline index of ~2,800 named Abuja places and streets (`public/data/abuja-places.json`, built from
-  OpenStreetMap). Matching forgives misspellings and abbreviations ("jabi laek", "natinal hosp",
+  offline index of ~9,300 named Abuja places and streets (`public/data/abuja-places.json`, built from
+  OpenStreetMap and Overture Maps). Many Abuja streets are missing from OpenStreetMap, so ~540 more
+  are recovered from business addresses in Overture (e.g. "Plot 1088 Isiyaku Ismaila Crescent, Wuye")
+  and shown as approximate. If a place still isn't found, "Put … on the map" lets you drop a pin
+  with the name you typed; Along remembers it for next time. Matching forgives misspellings and abbreviations ("jabi laek", "natinal hosp",
   "aminu kano cres"). When typing pauses, an online search (Nominatim + Photon) adds anything the
   offline list doesn't know, retrying with corrected spelling if needed. "Use my current location",
   recent places, keyboard navigation and "choose on the map" are built in.
@@ -33,7 +36,8 @@ a bus or shared cab "along" the corridor, and a short hop to the door. It's free
 | What | Source |
 | --- | --- |
 | Map tiles, place names, stop coordinates | © OpenStreetMap contributors (ODbL) |
-| Search | Photon (komoot), Nominatim fallback |
+| Offline place index | OpenStreetMap (ODbL) + Overture Maps places (CDLA-Permissive-2.0), see `scripts/` |
+| Online search | Nominatim and Photon (komoot) |
 | Road geometry | FOSSGIS OSRM (`routing.openstreetmap.de`); OpenRouteService if `ORS_API_KEY` is set |
 | Keke/okada rules | FCTA statements and DRTS enforcement reports (Tribune & Channels TV, Aug 2026; 21st Century Chronicle, Oct 2022; Leadership, 2024) |
 | Bus/cab fares | ICIR (10 Mar 2026), Leadership (2026), Daily Trust (27 Apr 2026) |
@@ -54,7 +58,14 @@ Open http://localhost:3000. No environment variables are required. `.env.example
 free-tier keys (OpenRouteService for route lines, Azure Speech for Nigerian voices).
 
 Other scripts: `npm run build`, `npm run lint`, `npm run typecheck`, and `npm run build:places`
-to refresh the offline place index from OpenStreetMap (re-run every few months).
+to refresh the offline place index from OpenStreetMap (re-run every few months). To include Overture
+places and streets (recommended):
+
+```bash
+pip install duckdb
+python scripts/fetch-overture.py overture-abuja.json
+node scripts/build-places.mjs --overture overture-abuja.json
+```
 
 ## Structure
 

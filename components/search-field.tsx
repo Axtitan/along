@@ -7,6 +7,7 @@ import {
   IconHistory,
   IconLoader2,
   IconMapPin,
+  IconMapPinPlus,
   IconPointer,
   IconX,
 } from "@tabler/icons-react"
@@ -21,6 +22,7 @@ type Item =
   | { kind: "gps" }
   | { kind: "map" }
   | { kind: "result"; result: GeocodeResult }
+  | { kind: "name"; text: string }
 
 const SOURCE_ICON = {
   hub: IconBusStop,
@@ -29,6 +31,10 @@ const SOURCE_ICON = {
   search: IconMapPin,
   gps: IconCurrentLocation,
 } as const
+
+function titleCase(s: string) {
+  return s.trim().replace(/\s+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+}
 
 const SOURCE_LABEL: Partial<Record<GeocodeResult["source"], string>> = {
   hub: "Along stop",
@@ -87,10 +93,14 @@ export function SearchField({
 
   const actions = (): Item[] => (role === "origin" ? [{ kind: "gps" }, { kind: "map" }] : [{ kind: "map" }])
 
-  const show = (results: GeocodeResult[]) => {
-    setItems([...actions(), ...results.map((result) => ({ kind: "result" as const, result }))])
+  const show = (results: GeocodeResult[], query = "") => {
+    const tail: Item[] = query.length >= 3 ? [{ kind: "name", text: query }] : []
+    setItems([...actions(), ...results.map((result) => ({ kind: "result" as const, result })), ...tail])
     setActive(results.length ? actions().length : -1)
   }
+
+  /** Places the user picked before (including ones they named themselves) that fit the query. */
+  const recentMatches = (q: string) => getRecent().filter((r) => matchesQuery(q, r)).slice(0, 3)
 
   /**
    * Suggestions update on every keystroke from the offline, typo-tolerant index. Once typing
@@ -110,9 +120,9 @@ export function SearchField({
       return
     }
 
-    const local = searchLocal(trimmed, near, 6)
+    const local = [...recentMatches(trimmed), ...searchLocal(trimmed, near, 6)]
     const stillRelevant = remoteRef.current.filter((r) => matchesQuery(trimmed, r))
-    show(mergeResults(local, stillRelevant))
+    show(mergeResults(local, stillRelevant), trimmed)
     if (trimmed.length < 3) {
       setLoading(false)
       return
@@ -127,7 +137,7 @@ export function SearchField({
         const answers = await Promise.all(queries.map((x) => searchRemote(x, near).catch(() => [])))
         if (latestRef.current !== trimmed) return
         remoteRef.current = answers.flat()
-        show(mergeResults(searchLocal(trimmed, near, 6), remoteRef.current))
+        show(mergeResults([...recentMatches(trimmed), ...searchLocal(trimmed, near, 6)], remoteRef.current), trimmed)
       } finally {
         if (latestRef.current === trimmed) setLoading(false)
       }
@@ -144,6 +154,11 @@ export function SearchField({
   }
 
   const choose = async (item: Item) => {
+    if (item.kind === "name") {
+      setOpen(false)
+      setPickMode(role, titleCase(item.text))
+      return
+    }
     if (item.kind === "map") {
       setOpen(false)
       setPickMode(role)
@@ -268,6 +283,23 @@ export function SearchField({
                 </li>
               )
             }
+            if (item.kind === "name") {
+              return (
+                <li key="name" role="option" aria-selected={isActive} className="border-t border-line">
+                  <button type="button" className={base} onMouseEnter={() => setActive(i)} onClick={() => choose(item)}>
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-violet/10 text-violet">
+                      <IconMapPinPlus size={17} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-ink">
+                        Can&apos;t see it? Put &ldquo;{titleCase(item.text)}&rdquo; on the map
+                      </span>
+                      <span className="block text-xs text-ink/55">Tap where it is — Along will remember it for next time</span>
+                    </span>
+                  </button>
+                </li>
+              )
+            }
             const r = item.result
             const Icon = SOURCE_ICON[r.source] ?? IconMapPin
             const tag = SOURCE_LABEL[r.source]
@@ -290,10 +322,8 @@ export function SearchField({
               </li>
             )
           })}
-          {text.trim().length >= 2 && items.every((x) => x.kind !== "result") && (
-            <li className="px-4 py-3 text-xs text-ink/55">
-              {loading ? "Searching…" : "No matching places in Abuja yet. Try a nearby landmark, street or district, or choose on the map."}
-            </li>
+          {loading && items.every((x) => x.kind !== "result") && (
+            <li className="px-4 py-3 text-xs text-ink/55">Searching…</li>
           )}
         </ul>
       )}

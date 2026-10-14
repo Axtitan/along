@@ -7,7 +7,7 @@ import "leaflet/dist/leaflet.css"
 import { IconCurrentLocation, IconX } from "@tabler/icons-react"
 import { CORRIDORS, HUBS, HUB_MAP } from "@/lib/network"
 import { locateOnce, useAppStore } from "@/lib/store"
-import { reverseGeocode } from "@/lib/geocode"
+import { reverseGeocode, saveRecent } from "@/lib/geocode"
 import { legRoute } from "@/lib/directions"
 import { ABUJA_CENTER, ABUJA_BOUNDS } from "@/lib/geo"
 import { MODE_META } from "@/lib/format"
@@ -224,12 +224,15 @@ function ClickToPick() {
       if (!mode) return
       const { lat, lng } = e.latlng
       const store = useAppStore.getState()
+      const typedName = store.pickName
       store.setPickMode(null)
-      const pin: GeoPoint = { name: "Dropped pin", detail: "Finding address…", lat, lng, type: "pin" }
+      const pin: GeoPoint = { name: typedName ?? "Dropped pin", detail: "Finding address…", lat, lng, type: typedName ? "custom" : "pin" }
       if (mode === "origin") store.setOrigin(pin)
       else store.setDestination(pin)
       const where = await reverseGeocode(lat, lng)
-      const named: GeoPoint = { ...pin, name: where.name, detail: where.detail }
+      // A place the user named themselves keeps that name; the address becomes the detail line.
+      const named: GeoPoint = typedName ? { ...pin, detail: where.name } : { ...pin, name: where.name, detail: where.detail }
+      if (typedName) saveRecent(named)
       const now = useAppStore.getState()
       if (mode === "origin" && now.origin === pin) now.setOrigin(named)
       if (mode === "destination" && now.destination === pin) now.setDestination(named)
@@ -277,6 +280,7 @@ function initialCenter(): [number, number] {
 export function MapView() {
   const pickMode = useAppStore((s) => s.pickMode)
   const setPickMode = useAppStore((s) => s.setPickMode)
+  const pickName = useAppStore((s) => s.pickName)
   const [center] = useState(initialCenter)
 
   return (
@@ -305,7 +309,8 @@ export function MapView() {
       {pickMode && (
         <div className="pick-banner">
           <span>
-            Tap the map to set your <b>{pickMode === "origin" ? "starting point" : "destination"}</b>
+            Tap the map where{" "}
+            <b>{pickName ? `“${pickName}”` : pickMode === "origin" ? "you're starting" : "you're going"}</b> is
           </span>
           <button type="button" onClick={() => setPickMode(null)} aria-label="Cancel">
             <IconX size={16} />
@@ -323,7 +328,9 @@ function AttributionAndZoom() {
     const attribution = L.control
       // Bottom-right on desktop; on phones the bottom sheet covers that corner.
       .attribution({ position: window.innerWidth >= 768 ? "bottomright" : "topleft", prefix: false })
-      .addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>')
+      .addAttribution(
+        '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> · Places: <a href="https://overturemaps.org" target="_blank" rel="noreferrer">Overture Maps</a>',
+      )
       .addTo(map)
     return () => {
       zoom.remove()

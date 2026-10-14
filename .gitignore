@@ -38,3 +38,6 @@ next-env.d.ts
 
 # vercel
 .vercel
+
+# raw place exports used by scripts/build-places.mjs
+overture-abuja.json
