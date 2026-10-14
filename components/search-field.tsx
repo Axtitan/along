@@ -10,7 +10,7 @@ import {
   IconPointer,
   IconX,
 } from "@tabler/icons-react"
-import { searchLocal } from "@/lib/places"
+import { correctQuery, loadPlaceIndex, matchesQuery, searchLocal } from "@/lib/places"
 import { getRecent, mergeResults, reverseGeocode, searchRemote } from "@/lib/geocode"
 import { locateOnce, useAppStore } from "@/lib/store"
 import { km } from "@/lib/geo"
@@ -53,8 +53,11 @@ export function SearchField({
   const listId = useId()
   const wrapRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const abortRef = useRef<AbortController | null>(null)
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** Latest query text, so slow online answers for an older query are only kept, not shown */
+  const latestRef = useRef("")
+  /** Last online results, re-filtered as the user keeps typing so the list doesn't flash empty */
+  const remoteRef = useRef<GeocodeResult[]>([])
   const [open, setOpen] = useState(false)
   const [items, setItems] = useState<Item[]>([])
   const [active, setActive] = useState(-1)
@@ -77,7 +80,6 @@ export function SearchField({
 
   useEffect(
     () => () => {
-      abortRef.current?.abort()
       if (timerRef.current) clearTimeout(timerRef.current)
     },
     [],
@@ -85,40 +87,60 @@ export function SearchField({
 
   const actions = (): Item[] => (role === "origin" ? [{ kind: "gps" }, { kind: "map" }] : [{ kind: "map" }])
 
+  const show = (results: GeocodeResult[]) => {
+    setItems([...actions(), ...results.map((result) => ({ kind: "result" as const, result }))])
+    setActive(results.length ? actions().length : -1)
+  }
+
+  /**
+   * Suggestions update on every keystroke from the offline, typo-tolerant index. Once typing
+   * pauses, an online search (OpenStreetMap) adds anything the offline list doesn't know.
+   */
   const refresh = (q: string) => {
-    abortRef.current?.abort()
     if (timerRef.current) clearTimeout(timerRef.current)
     const near = userLocation ?? undefined
     const trimmed = q.trim()
+    latestRef.current = trimmed
 
     if (!trimmed) {
       setLoading(false)
-      setItems([...actions(), ...getRecent().map((result) => ({ kind: "result" as const, result }))])
+      remoteRef.current = []
+      show(getRecent())
       setActive(-1)
       return
     }
 
-    const local = searchLocal(trimmed, near, 4)
-    setItems([...actions(), ...local.map((result) => ({ kind: "result" as const, result }))])
-    setActive(local.length ? actions().length : -1)
-    if (trimmed.length < 2) return
+    const local = searchLocal(trimmed, near, 6)
+    const stillRelevant = remoteRef.current.filter((r) => matchesQuery(trimmed, r))
+    show(mergeResults(local, stillRelevant))
+    if (trimmed.length < 3) {
+      setLoading(false)
+      return
+    }
 
     setLoading(true)
     timerRef.current = setTimeout(async () => {
-      const ctrl = new AbortController()
-      abortRef.current = ctrl
+      // If nothing offline matched, the words are probably misspelled: search the corrected text too.
+      const corrected = local.length ? null : correctQuery(trimmed)
+      const queries = corrected && corrected !== trimmed.toLowerCase() ? [trimmed, corrected] : [trimmed]
       try {
-        const remote = await searchRemote(trimmed, near, ctrl.signal)
-        if (ctrl.signal.aborted) return
-        const merged = mergeResults(local, remote)
-        setItems([...actions(), ...merged.map((result) => ({ kind: "result" as const, result }))])
-        setActive((a) => (a < 0 && merged.length ? actions().length : a))
-      } catch {
-        // offline or aborted: keep local results
+        const answers = await Promise.all(queries.map((x) => searchRemote(x, near).catch(() => [])))
+        if (latestRef.current !== trimmed) return
+        remoteRef.current = answers.flat()
+        show(mergeResults(searchLocal(trimmed, near, 6), remoteRef.current))
       } finally {
-        if (!ctrl.signal.aborted) setLoading(false)
+        if (latestRef.current === trimmed) setLoading(false)
       }
-    }, 280)
+    }, 450)
+  }
+
+  const openList = () => {
+    setOpen(true)
+    refresh(text)
+    // The full offline index loads on first use; re-run the search once it arrives.
+    loadPlaceIndex().then(() => {
+      if (inputRef.current === document.activeElement) refresh(inputRef.current?.value ?? "")
+    })
   }
 
   const choose = async (item: Item) => {
@@ -150,8 +172,7 @@ export function SearchField({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-      setOpen(true)
-      refresh(text)
+      openList()
       return
     }
     if (e.key === "ArrowDown") {
@@ -193,8 +214,13 @@ export function SearchField({
           }}
           onFocus={(e) => {
             e.currentTarget.select()
-            setOpen(true)
-            refresh(text)
+            openList()
+            // On phones, expand the sheet and bring the field to the top so suggestions aren't hidden by the keyboard.
+            if (window.innerWidth < 768) {
+              useAppStore.getState().setSheetCollapsed(false)
+              const el = e.currentTarget
+              setTimeout(() => el.scrollIntoView({ block: "start", behavior: "smooth" }), 250)
+            }
           }}
           onKeyDown={onKeyDown}
           className="h-12 min-w-0 flex-1 bg-transparent text-[15px] font-medium text-ink outline-none placeholder:font-normal placeholder:text-ink/40"
@@ -264,8 +290,10 @@ export function SearchField({
               </li>
             )
           })}
-          {!loading && text.trim().length >= 2 && items.every((x) => x.kind !== "result") && (
-            <li className="px-4 py-3 text-xs text-ink/55">No places found in Abuja. Try a landmark, street or district.</li>
+          {text.trim().length >= 2 && items.every((x) => x.kind !== "result") && (
+            <li className="px-4 py-3 text-xs text-ink/55">
+              {loading ? "Searching…" : "No matching places in Abuja yet. Try a nearby landmark, street or district, or choose on the map."}
+            </li>
           )}
         </ul>
       )}

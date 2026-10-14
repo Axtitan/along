@@ -5,15 +5,27 @@
     {
       "source": "/api/tts",
       "headers": [
-        { "key": "Cache-Control", "value": "no-store" }
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
       ]
     },
     {
       "source": "/(.*)",
       "headers": [
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" }
+        {
+          "key": "Referrer-Policy",
+          "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "X-Content-Type-Options",
+          "value": "nosniff"
+        }
       ]
     }
+  ],
+  "regions": [
+    "fra1"
   ]
 }

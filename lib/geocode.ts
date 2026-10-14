@@ -1,5 +1,5 @@
 import type { GeocodeResult, GeoPoint } from "./types"
-import { nearestPlace, searchLocal } from "./places"
+import { correctQuery, loadPlaceIndex, nearestPlace, searchLocal } from "./places"
 import { km } from "./geo"
 
 const remoteCache = new Map<string, GeocodeResult[]>()
@@ -47,14 +47,20 @@ export function mergeResults(local: GeocodeResult[], remote: GeocodeResult[], li
 
 /** Best single match for free text — used when someone presses "Find route" without picking a suggestion. */
 export async function resolvePlace(text: string, near?: { lat: number; lng: number }): Promise<GeoPoint | null> {
-  const local = searchLocal(text, near, 1)
-  const exact = local[0] && local[0].name.toLowerCase() === text.trim().toLowerCase()
-  if (exact) return local[0]
+  await loadPlaceIndex()
+  const local = searchLocal(text, near, 1)[0]
+  // A confident offline match (even with a typo) wins: "jabi laek" → Jabi Lake Mall.
+  if (local && local.score >= 0.85) return local
   try {
     const remote = await searchRemote(text, near)
     if (remote[0]) return remote[0]
+    const fixed = correctQuery(text)
+    if (fixed !== text.trim().toLowerCase()) {
+      const retry = await searchRemote(fixed, near)
+      if (retry[0]) return retry[0]
+    }
   } catch {}
-  return local[0] ?? null
+  return local ?? null
 }
 
 export async function reverseGeocode(lat: number, lng: number): Promise<{ name: string; detail?: string }> {

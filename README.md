@@ -5,9 +5,12 @@ a bus or shared cab "along" the corridor, and a short hop to the door. It's free
 
 ## What it does
 
-- **Search that knows Abuja.** Instant offline matches for motor parks, junctions, landmarks and
-  districts, plus Photon (OpenStreetMap) type-ahead search biased to where you are. "Use my current
-  location", recent places, keyboard navigation and "choose on the map" are built in.
+- **Search that knows Abuja, even with typos.** Suggestions appear from the first letter, from an
+  offline index of ~2,800 named Abuja places and streets (`public/data/abuja-places.json`, built from
+  OpenStreetMap). Matching forgives misspellings and abbreviations ("jabi laek", "natinal hosp",
+  "aminu kano cres"). When typing pauses, an online search (Nominatim + Photon) adds anything the
+  offline list doesn't know, retrying with corrected spelling if needed. "Use my current location",
+  recent places, keyboard navigation and "choose on the map" are built in.
 - **Realistic first and last mile.** Along never suggests walking more than about 500 m (800 m inside
   the city centre). Longer hops become a keke, okada or cab, depending on where you are:
   - **Keke and okada only where they are allowed.** The FCTA bans them from the city centre and the
@@ -50,7 +53,8 @@ npm run dev
 Open http://localhost:3000. No environment variables are required. `.env.example` lists optional
 free-tier keys (OpenRouteService for route lines, Azure Speech for Nigerian voices).
 
-Other scripts: `npm run build`, `npm run lint`, `npm run typecheck`.
+Other scripts: `npm run build`, `npm run lint`, `npm run typecheck`, and `npm run build:places`
+to refresh the offline place index from OpenStreetMap (re-run every few months).
 
 ## Structure
 
@@ -61,7 +65,8 @@ Other scripts: `npm run build`, `npm run lint`, `npm run typecheck`.
 - `lib/zones.ts` — where keke and okada may operate
 - `lib/fares.ts` — fare and speed models
 - `lib/router.ts` — multi-modal route search (first/last mile + corridors)
-- `lib/places.ts` — offline gazetteer of hubs, landmarks and OSM neighbourhoods
+- `lib/places.ts` — offline place index (hubs, landmarks, OSM places) and search
+- `lib/fuzzy.ts` — typo-tolerant matching and spelling correction
 - `components/` — map, search field, panels, settings
 
 ## Limitations
