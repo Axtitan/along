@@ -1,11 +1,20 @@
 import type { Corridor, GeoPoint, Hub, Journey, Leg, RoutePreference, TransportMode, Zone } from "./types"
 import { CORRIDORS, HUBS, HUB_MAP } from "./network"
 import { km, roadKm } from "./geo"
+import { zoneOf, kekeAllowed, okadaAllowed } from "./zones"
+import { baseFare, fareRange, rideFare, travelMinutes, MAX_WALK_KM, SPEED } from "./fares"
+import {
+  corridorDetails,
+  kekeDetails,
+  okadaDetails,
+  rideDetails,
+  taxiDetails,
+  walkDetails,
+  type Place,
+} from "./instructions"
 
 /** Corridors follow the main road between boarding points, so they detour less than street trips. */
 const CORRIDOR_ROAD_FACTOR = 1.15 / 1.3
-import { zoneOf, kekeAllowed, okadaAllowed } from "./zones"
-import { baseFare, fareRange, rideFare, travelMinutes, MAX_WALK_KM, SPEED } from "./fares"
 
 /* ------------------------------------------------------------------ */
 /* Graph                                                               */
@@ -42,7 +51,7 @@ function corridorScale(c: Corridor) {
   return Math.min(1.6, Math.max(0.7, c.fareCheck.fare / model))
 }
 
-const VEHICLE_WORD: Record<Corridor["mode"], string> = { bus: "bus", taxi: "shared cab", keke: "keke" }
+const VEHICLE_WORD: Record<Corridor["mode"], string> = { bus: "Bus", taxi: "Shared cab", keke: "Keke" }
 
 function corridorLeg(c: Corridor, i: number, j: number, scale: number): Leg {
   const from = HUB_MAP[c.stops[i]]
@@ -50,26 +59,24 @@ function corridorLeg(c: Corridor, i: number, j: number, scale: number): Leg {
   const terminal = HUB_MAP[j > i ? c.stops[c.stops.length - 1] : c.stops[0]]
   const d = corridorKm(c, i, j)
   const fare = fareRange(baseFare(c.mode, d) * scale)
-  const heading = terminal.id === to.id ? to.name : `${terminal.name}`
-  const tip =
-    c.mode === "bus"
-      ? `Ask the conductor "${to.name}?" before you enter. Pay about ₦${fare[0].toLocaleString()}–₦${fare[1].toLocaleString()}.`
-      : c.mode === "taxi"
-        ? `Tell the driver "${to.name}, along" — you share the cab. Agree the fare before entering.`
-        : `Keke drop is about ₦${fare[0].toLocaleString()}–₦${fare[1].toLocaleString()}.`
+  const rideMinutes = Math.max(1, Math.round((d / c.speed) * 60))
+  const step = j > i ? 1 : -1
+  const path: Hub[] = []
+  for (let k = i; k !== j + step; k += step) path.push(HUB_MAP[c.stops[k]])
+  const via = path.slice(1, -1)
   return {
     mode: c.mode,
     from: from.name,
     to: to.name,
     distance: Math.round(d * 1000),
-    time: c.wait + Math.max(1, Math.round((d / c.speed) * 60)),
+    time: c.wait + rideMinutes,
     fare,
-    text: `At ${from.name}, board a ${VEHICLE_WORD[c.mode]} heading to ${heading}. Drop at ${to.name}.`,
-    tip,
-    coords: [
-      [from.lat, from.lng],
-      [to.lat, to.lng],
-    ],
+    text: `${VEHICLE_WORD[c.mode]} from ${from.name} to ${to.name}`,
+    tip: `${c.name} line, towards ${terminal.name}`,
+    details: corridorDetails(c, from, to, terminal, via, fare, rideMinutes),
+    via: via.map((h) => h.name),
+    waypoints: path.map((h) => [h.lat, h.lng] as [number, number]),
+    coords: path.map((h) => [h.lat, h.lng] as [number, number]),
     corridor: c.name,
   }
 }
@@ -101,7 +108,8 @@ for (const a of HUBS) {
           to: b.name,
           distance: Math.round(d * 1000),
           time: travelMinutes("walk", d),
-          text: `Walk about ${Math.round(d * 1000)} m to ${b.name}.`,
+          text: `Walk to ${b.name}`,
+          details: walkDetails(a, b, d, travelMinutes("walk", d)),
           coords: [
             [a.lat, a.lng],
             [b.lat, b.lng],
@@ -125,12 +133,7 @@ function metres(d: number) {
  * Never suggests walking more than MAX_WALK_KM (0.8 km in the city centre, where
  * keke/okada are banned and the alternative is a cab).
  */
-function connectorLegs(
-  a: { name: string; lat: number; lng: number },
-  b: { name: string; lat: number; lng: number },
-  zone: Zone,
-  direction: "access" | "egress",
-): Leg[] {
+function connectorLegs(a: Place, b: Place, zone: Zone, direction: "access" | "egress" | "direct"): Leg[] {
   const d = roadKm(a, b)
   const coords: [number, number][] = [
     [a.lat, a.lng],
@@ -138,7 +141,7 @@ function connectorLegs(
   ]
   const legs: Leg[] = []
   // You're basically there: a zero-cost hop that toJourney() drops.
-  if (d < 0.08) return [{ mode: "walk", from: a.name, to: b.name, distance: 0, time: 0, text: "", coords }]
+  if (d < 0.08) return [{ mode: "walk", from: a.name, to: b.name, distance: 0, time: 0, text: "", details: [], coords }]
   const walkLimit = zone === "core" ? 0.8 : MAX_WALK_KM
 
   if (d <= walkLimit) {
@@ -148,7 +151,8 @@ function connectorLegs(
       to: b.name,
       distance: Math.round(d * 1000),
       time: travelMinutes("walk", d),
-      text: `Walk ${metres(d)} to ${b.name}.`,
+      text: `Walk ${metres(d)} to ${b.name}`,
+      details: walkDetails(a, b, d, travelMinutes("walk", d)),
       coords,
     })
     if (d <= MAX_WALK_KM) return legs
@@ -164,14 +168,8 @@ function connectorLegs(
       distance: Math.round(d * 1000),
       time: SPEED.keke.wait + travelMinutes("keke", d),
       fare,
-      text:
-        direction === "access"
-          ? `Take a keke to ${b.name}.`
-          : `Take a keke from ${a.name} to your destination.`,
-      tip:
-        zone === "estate"
-          ? "Keke run inside the estate but not on the expressway."
-          : `Keke drop is usually ₦${fare[0].toLocaleString()}–₦${fare[1].toLocaleString()}.`,
+      text: `Keke to ${b.name}`,
+      details: kekeDetails(a, b, fare, direction),
       coords,
     })
   }
@@ -185,11 +183,8 @@ function connectorLegs(
       distance: Math.round(d * 1000),
       time: SPEED.okada.wait + travelMinutes("okada", d),
       fare,
-      text:
-        direction === "access"
-          ? `Take an okada (bike) to ${b.name}.`
-          : `Take an okada (bike) from ${a.name} to your destination.`,
-      tip: "Ask for a helmet. Okada are only allowed outside the city centre.",
+      text: `Okada (bike) to ${b.name}`,
+      details: okadaDetails(a, b, fare, direction),
       coords,
     })
   }
@@ -204,14 +199,9 @@ function connectorLegs(
     // Cabs rarely cruise inside estates and satellite towns; expect a longer wait there.
     time: (zone === "core" ? SPEED.taxi.wait : SPEED.taxi.wait + 4) + travelMinutes("taxi", d),
     fare,
-    text:
-      direction === "access"
-        ? `Flag down a cab to ${b.name} on the nearest main road.`
-        : `Take a cab from ${a.name} to your destination.`,
-    tip:
-      zone === "core"
-        ? "Keke and okada are banned in the city centre. If no cab passes, book a short Bolt or inDrive."
-        : "Say \"drop\" if you want the cab to yourself — it costs more than sharing.",
+    text: `Cab to ${b.name}`,
+    tip: zone === "core" ? "Keke and okada aren't allowed in the city centre." : undefined,
+    details: taxiDetails(a, b, fare, zone, direction),
     coords,
   })
 
@@ -235,8 +225,9 @@ function rideLeg(origin: GeoPoint, destination: GeoPoint): Leg {
     distance: Math.round(d * 1000),
     time: SPEED.ride.wait + minutes,
     fare: rideFare(d, minutes),
-    text: `Book a Bolt or inDrive from ${origin.name} to ${destination.name}.`,
-    tip: "Estimate from Bolt's last published Abuja rates. Compare both apps — inDrive lets you offer a price.",
+    text: `Bolt or inDrive to ${destination.name}`,
+    tip: "Estimate from Bolt's last published Abuja rates (Aug 2024) plus fuel increases.",
+    details: rideDetails(origin, destination, rideFare(d, minutes)),
     coords: [
       [origin.lat, origin.lng],
       [destination.lat, destination.lng],
@@ -300,8 +291,7 @@ function buildGraph(origin: GeoPoint, destination: GeoPoint) {
   const direct = roadKm(origin, destination)
   if (direct <= 8) {
     // Use the stricter of the two zones so we never send a keke into the city centre.
-    for (const leg of connectorLegs(origin, destination, stricter(oZone, dZone), "access")) {
-      leg.text = leg.mode === "walk" ? `Walk ${metres(direct)} to ${destination.name}.` : leg.text.replace(/ to .*$/, ` straight to ${destination.name}.`)
+    for (const leg of connectorLegs(origin, destination, stricter(oZone, dZone), "direct")) {
       extra[ORIGIN].push({ to: DEST, leg, boards: leg.mode !== "walk" })
     }
   }

@@ -5,6 +5,8 @@ import { useAppStore } from "@/lib/store"
 import { distanceText, duration, fareText, MODE_META } from "@/lib/format"
 import { ModeBadge, ModeIcon } from "@/components/mode-icon"
 import type { Journey } from "@/lib/types"
+import { LegDetails } from "@/components/leg-details"
+import { useLegRoutes } from "@/hooks/use-leg-routes"
 
 function ModeChain({ journey }: { journey: Journey }) {
   return (
@@ -64,7 +66,8 @@ function OptionCard({ journey, active, onClick }: { journey: Journey; active: bo
   )
 }
 
-export function Timeline({ journey, current }: { journey: Journey; current?: number }) {
+export function Timeline({ journey, current, compact = false }: { journey: Journey; current?: number; compact?: boolean }) {
+  const legRoutes = useLegRoutes(journey)
   return (
     <ol className="relative">
       {journey.legs.map((l, i) => {
@@ -83,17 +86,15 @@ export function Timeline({ journey, current }: { journey: Journey; current?: num
               />
             )}
             <ModeBadge mode={l.mode} />
-            <div className={`min-w-0 flex-1 ${isCurrent ? "rounded-xl bg-brand/25 p-2 -m-2 mb-0" : ""}`}>
-              <div className="flex items-baseline justify-between gap-2">
-                <h3 className="text-sm font-semibold text-ink">{l.text}</h3>
-              </div>
-              {l.tip && <p className="mt-1 text-xs leading-relaxed text-ink/60">{l.tip}</p>}
-              <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-medium text-ink/55">
+            <div className={`min-w-0 flex-1 ${isCurrent ? "-m-2 mb-0 rounded-xl bg-brand/25 p-2" : ""}`}>
+              <h3 className="text-sm font-semibold text-ink">{l.text}</h3>
+              <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-medium text-ink/55">
                 <span>{duration(l.time)}</span>
                 {l.distance > 0 && <span>{distanceText(l.distance)}</span>}
                 {l.fare && <span className="font-semibold text-ink/80">{fareText(l.fare)}</span>}
-                {l.corridor && <span className="truncate">{l.corridor}</span>}
               </div>
+              {l.tip && <p className="mt-1 text-xs font-medium text-ink/60">{l.tip}</p>}
+              {!compact && <LegDetails leg={l} route={legRoutes[i]} />}
             </div>
           </li>
         )

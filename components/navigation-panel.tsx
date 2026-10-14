@@ -16,6 +16,8 @@ import { duration, fareText, MODE_META } from "@/lib/format"
 import { km } from "@/lib/geo"
 import { ModeBadge } from "@/components/mode-icon"
 import { Timeline } from "@/components/results-panel"
+import { LegDetails } from "@/components/leg-details"
+import { useLegRoutes } from "@/hooks/use-leg-routes"
 
 /** How close (km) you need to be to the end of a leg for Along to move to the next step. */
 const ARRIVAL_KM = 0.12
@@ -33,6 +35,7 @@ export function NavigationPanel() {
   const [tracking, setTracking] = useState<"off" | "on" | "denied">("off")
 
   const journey = routes[selected]
+  const legRoutes = useLegRoutes(journey)
   const total = journey?.legs.length ?? 0
   const leg = journey?.legs[navStep]
   const done = !leg
@@ -44,7 +47,8 @@ export function NavigationPanel() {
     if (!journey || spokenRef.current === key) return
     spokenRef.current = key
     const l = journey.legs[navStep]
-    if (l) speak(`${navStep === 0 ? "Let's go. " : ""}${l.text}${l.fare ? ` Fare is about ${l.fare[0]} to ${l.fare[1]} naira.` : ""}`)
+    // Read the full instructions; "₦1,050–1,450" reads badly, so spell fares out.
+    if (l) speak(`${navStep === 0 ? "Let's go. " : ""}${l.text}. ${l.details.join(" ").replace(/₦([\d,]+)–([\d,]+)/g, "$1 to $2 naira")}`)
     else speak(`You have arrived at ${journey.destination.name}.`)
   }, [journey, navStep, speak])
 
@@ -130,7 +134,8 @@ export function NavigationPanel() {
               {done ? "Arrived" : `Step ${navStep + 1} of ${total} · ${meta!.label}`}
             </div>
             <h2 className="mt-0.5 text-lg font-bold leading-snug">{done ? journey.destination.name : leg!.text}</h2>
-            {!done && leg!.tip && <p className="mt-1.5 text-[13px] leading-relaxed text-white/85">{leg!.tip}</p>}
+            {!done && leg!.tip && <p className="mt-1 text-[13px] font-medium text-white/85">{leg!.tip}</p>}
+            {!done && <LegDetails leg={leg!} route={legRoutes[navStep]} inverted />}
             {!done && (
               <div className="mt-2 flex gap-3 text-xs font-semibold text-white/90">
                 <span>{duration(leg!.time)}</span>
@@ -177,7 +182,8 @@ export function NavigationPanel() {
       </div>
 
       <section className="rounded-2xl border border-line bg-white p-4">
-        <Timeline journey={journey} current={navStep} />
+        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-ink/45">Whole trip</h3>
+        <Timeline journey={journey} current={navStep} compact />
       </section>
     </div>
   )
