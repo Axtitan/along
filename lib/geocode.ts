@@ -88,6 +88,7 @@ export async function reverseGeocode(lat: number, lng: number): Promise<{ name: 
 /* ------------------------- recent places ------------------------- */
 
 const RECENT_KEY = "along-recent-places"
+const MAX_RECENT = 30
 
 export function getRecent(): GeocodeResult[] {
   try {
@@ -103,6 +104,6 @@ export function saveRecent(p: GeoPoint) {
   try {
     const list = getRecent().filter((r) => r.name !== p.name)
     list.unshift({ name: p.name, detail: p.detail, lat: p.lat, lng: p.lng, type: p.type || "place", source: "recent" })
-    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 6)))
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, MAX_RECENT)))
   } catch {}
 }

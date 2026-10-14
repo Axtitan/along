@@ -1,7 +1,7 @@
 import type { GeocodeResult } from "./types"
 import { HUBS } from "./network"
 import { km } from "./geo"
-import { correctWords, expandTokens, matchScore, normalize, tokenize, type ScoreCache, type Searchable } from "./fuzzy"
+import { correctWords, expandTokens, matchScore, normalize, tokenize, wordScore, type ScoreCache, type Searchable } from "./fuzzy"
 
 type Row = [name: string, lat: number, lng: number, kind: string]
 
@@ -182,6 +182,8 @@ export function loadPlaceIndex(): Promise<void> {
           return entry(name, area ? `${kind}, ${area}` : kind, lat, lng, "place", IMPORTANT_KINDS.has(kind) ? 0.03 : 0)
         })
       vocabulary = null
+      entriesCache = null
+      wordIndex = null
     })
     .catch(() => {
       loading = null // try again next time
@@ -189,8 +191,48 @@ export function loadPlaceIndex(): Promise<void> {
   return loading
 }
 
+let entriesCache: Entry[] | null = null
+let wordIndex: Map<string, number[]> | null = null
+
 function allEntries() {
-  return extra.length ? [...CORE, ...extra] : CORE
+  entriesCache ??= extra.length ? [...CORE, ...extra] : CORE
+  return entriesCache
+}
+
+/** word → places containing it (in the name, an alias or the area line) */
+function getWordIndex() {
+  if (!wordIndex) {
+    wordIndex = new Map()
+    allEntries().forEach((e, i) => {
+      const words = new Set([...(e.expanded ?? []).flat(), ...(e.context ?? [])])
+      for (const w of words) {
+        const list = wordIndex!.get(w)
+        if (list) list.push(i)
+        else wordIndex!.set(w, [i])
+      }
+    })
+  }
+  return wordIndex
+}
+
+/**
+ * Places that could possibly match: every match needs its most distinctive (longest) typed word
+ * to fit some word of the place, so only look at places containing such a word.
+ */
+function candidates(q: string[]): Entry[] {
+  let anchor = q.length - 1
+  for (let i = 0; i < q.length; i++) if (q[i].length > q[anchor].length) anchor = i
+  const typing = anchor === q.length - 1
+  const a = q[anchor]
+  const ids = new Set<number>()
+  for (const [w, list] of getWordIndex()) {
+    // Quick pre-check before the full comparison: a match shares the first letter, the second
+    // letter (typo in the first), or has the first two swapped. Substring matches need 4+ letters.
+    if (w[0] !== a[0] && w[1] !== a[1] && w[0] !== a[1] && !(a.length >= 4 && w.includes(a))) continue
+    if (wordScore(a, w, typing) > 0) for (const id of list) ids.add(id)
+  }
+  const all = allEntries()
+  return [...ids].map((i) => all[i])
 }
 
 function getVocabulary() {
@@ -209,9 +251,11 @@ export function searchLocal(query: string, near?: { lat: number; lng: number }, 
   const q = tokenize(query)
   if (!q.length) return []
   const cache: ScoreCache = []
+  // Lenient matching may skip the anchor word, so it looks at everything (it's rare).
+  const pool = (lenient: boolean) => (lenient ? allEntries() : candidates(q))
   const run = (lenient: boolean) => {
     const out: { e: Entry; score: number }[] = []
-    for (const e of allEntries()) {
+    for (const e of pool(lenient)) {
       const m = matchScore(q, e, cache, lenient)
       if (m < (lenient ? 0.42 : 0.55)) continue
       let score = m + e.boost
