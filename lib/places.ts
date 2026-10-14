@@ -1,6 +1,7 @@
 import type { GeocodeResult } from "./types"
 import { HUBS } from "./network"
 import { km } from "./geo"
+import { correctWords, expandTokens, matchScore, normalize, tokenize, type ScoreCache, type Searchable } from "./fuzzy"
 
 type Row = [name: string, lat: number, lng: number, kind: string]
 
@@ -129,77 +130,129 @@ const OSM_PLACES: Row[] = [
   ["Wuse II", 9.0762, 7.476, "District"],
   ["Wuye", 9.0498, 7.4425, "District"],]
 
-interface Entry {
+interface Entry extends Searchable {
   name: string
   detail: string
   lat: number
   lng: number
   source: GeocodeResult["source"]
-  keys: string[]
+  /** Ranking nudge: transport hubs and well-known landmarks first */
+  boost: number
 }
 
-function norm(s: string) {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9 ]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
+function entry(name: string, detail: string, lat: number, lng: number, source: Entry["source"], boost: number, aliases: string[] = []): Entry {
+  const tokenSets = [tokenize(name), ...aliases.map(tokenize)]
+  return { name, detail, lat, lng, source, boost, tokenSets, expanded: tokenSets.map(expandTokens), context: tokenize(detail) }
 }
 
-const INDEX: Entry[] = (() => {
+/** Always-available places: Along's boarding points, landmarks and districts. */
+const CORE: Entry[] = (() => {
   const out: Entry[] = []
   const seen = new Set<string>()
-  const add = (e: Omit<Entry, "keys">, extra: string[] = []) => {
-    const k = norm(e.name)
+  const add = (e: Entry) => {
+    const k = normalize(e.name)
     if (seen.has(k)) return
     seen.add(k)
-    out.push({ ...e, keys: [k, ...extra.map(norm)] })
+    out.push(e)
   }
-  for (const h of HUBS) {
-    add({ name: h.name, detail: h.kind, lat: h.lat, lng: h.lng, source: "hub" }, h.aliases)
-  }
-  for (const [name, lat, lng, kind] of LANDMARKS) add({ name, detail: kind, lat, lng, source: "place" })
-  for (const [name, lat, lng, kind] of OSM_PLACES) add({ name, detail: `${kind}, FCT`, lat, lng, source: "place" })
+  for (const h of HUBS) add(entry(h.name, h.kind, h.lat, h.lng, "hub", 0.08, h.aliases))
+  for (const [name, lat, lng, kind] of LANDMARKS) add(entry(name, kind, lat, lng, "place", 0.06))
+  for (const [name, lat, lng, kind] of OSM_PLACES) add(entry(name, `${kind}, FCT`, lat, lng, "place", 0.04))
   return out
 })()
 
-/**
- * Instant, offline matches for Abuja places. Scores whole-name prefix > word prefix > substring,
- * and nudges results near `near` (the user's location) upwards.
- */
-export function searchLocal(query: string, near?: { lat: number; lng: number }, limit = 5): GeocodeResult[] {
-  const q = norm(query)
-  if (!q) return []
-  const scored: { e: Entry; score: number }[] = []
-  for (const e of INDEX) {
-    let score = 0
-    for (const k of e.keys) {
-      if (k === q) score = Math.max(score, 100)
-      else if (k.startsWith(q)) score = Math.max(score, 80)
-      else if (k.split(" ").some((w) => w.startsWith(q))) score = Math.max(score, 60)
-      else if (q.length >= 3 && k.includes(q)) score = Math.max(score, 40)
-    }
-    if (!score) continue
-    if (e.source === "hub") score += 5
-    if (near) score -= Math.min(15, km(near, e) / 3)
-    scored.push({ e, score })
+/** The full OpenStreetMap index (≈2,800 named places and streets), loaded on first search. */
+let extra: Entry[] = []
+let vocabulary: Map<string, number> | null = null
+let loading: Promise<void> | null = null
+
+const IMPORTANT_KINDS = new Set(["Hospital", "Mall", "Market", "University", "Motor park", "District", "Town", "Estate", "Stadium", "Hotel"])
+
+export function loadPlaceIndex(): Promise<void> {
+  loading ??= fetch("/data/abuja-places.json")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((j: { kinds: string[]; areas: string[]; places: [string, number, number, number, number][] } | null) => {
+      if (!j) return
+      const coreNames = new Set(CORE.map((e) => normalize(e.name)))
+      extra = j.places
+        .filter(([name]) => !coreNames.has(normalize(name)))
+        .map(([name, lat, lng, k, a]) => {
+          const kind = j.kinds[k] ?? "Place"
+          const area = a >= 0 ? j.areas[a] : null
+          return entry(name, area ? `${kind}, ${area}` : kind, lat, lng, "place", IMPORTANT_KINDS.has(kind) ? 0.03 : 0)
+        })
+      vocabulary = null
+    })
+    .catch(() => {
+      loading = null // try again next time
+    })
+  return loading
+}
+
+function allEntries() {
+  return extra.length ? [...CORE, ...extra] : CORE
+}
+
+function getVocabulary() {
+  if (!vocabulary) {
+    vocabulary = new Map()
+    for (const e of allEntries()) for (const set of e.tokenSets) for (const t of set) vocabulary.set(t, (vocabulary.get(t) ?? 0) + 1)
   }
+  return vocabulary
+}
+
+/**
+ * Instant, offline, typo-tolerant search over Abuja places. Results near `near`
+ * (the user's location) get a small boost.
+ */
+export function searchLocal(query: string, near?: { lat: number; lng: number }, limit = 6): (GeocodeResult & { score: number })[] {
+  const q = tokenize(query)
+  if (!q.length) return []
+  const cache: ScoreCache = []
+  const run = (lenient: boolean) => {
+    const out: { e: Entry; score: number }[] = []
+    for (const e of allEntries()) {
+      const m = matchScore(q, e, cache, lenient)
+      if (m < (lenient ? 0.42 : 0.55)) continue
+      let score = m + e.boost
+      if (near) score -= Math.min(0.1, km(near, e) / 150)
+      out.push({ e, score })
+    }
+    return out
+  }
+  let scored = run(false)
+  if (!scored.length && q.length > 1) scored = run(true)
   return scored
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map(({ e }) => ({ name: e.name, detail: e.detail, lat: e.lat, lng: e.lng, type: e.source, source: e.source }))
+    .map(({ e, score }) => ({ name: e.name, detail: e.detail, lat: e.lat, lng: e.lng, type: e.source, source: e.source, score }))
 }
 
-/** Closest known Abuja place (stop, landmark or neighbourhood) within `maxKm`. */
+/** Does an (online) result still fit what the user has now typed? */
+export function matchesQuery(query: string, r: { name: string; detail?: string }) {
+  const q = tokenize(query)
+  if (!q.length) return false
+  const item = { tokenSets: [tokenize(r.name), tokenize(`${r.name} ${r.detail ?? ""}`)] }
+  return matchScore(q, item, [], true) >= 0.5
+}
+
+/** The query with misspelled words swapped for known place-name words ("jabi laek" → "jabi lake"). */
+export function correctQuery(query: string): string {
+  const q = tokenize(query)
+  return correctWords(q, getVocabulary()).join(" ")
+}
+
+/** Closest known Abuja place (stop, landmark, street or neighbourhood) within `maxKm`. */
 export function nearestPlace(p: { lat: number; lng: number }, maxKm = 2) {
   let best: { e: Entry; d: number } | null = null
-  for (const e of INDEX) {
+  for (const e of allEntries()) {
     const d = km(p, e)
     if (d <= maxKm && (!best || d < best.d)) best = { e, d }
   }
   return best ? { name: best.e.name, km: best.d } : null
 }
 
-export const POPULAR_PLACES = ["Wuse Market", "Jabi Lake Mall", "Federal Secretariat", "Area 1", "Nyanya", "Kubwa"]
-  .map((n) => searchLocal(n, undefined, 1)[0])
-  .filter(Boolean)
+export const POPULAR_PLACES: GeocodeResult[] = ["Wuse Market", "Jabi Lake Mall", "Federal Secretariat", "Area 1", "Nyanya", "Kubwa"]
+  .map((n) => CORE.find((e) => e.name === n) ?? CORE.find((e) => e.tokenSets.some((t) => t.join(" ") === normalize(n))))
+  .filter((e): e is Entry => !!e)
+  .map((e) => ({ name: e.name, detail: e.detail, lat: e.lat, lng: e.lng, type: e.source, source: e.source }))

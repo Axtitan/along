@@ -69,7 +69,7 @@ async function photonSearch(q: string, lat: number | null, lon: number | null): 
   u.searchParams.set("bbox", `${BBOX.west},${BBOX.south},${BBOX.east},${BBOX.north}`)
   u.searchParams.set("lat", String(lat ?? 9.0556))
   u.searchParams.set("lon", String(lon ?? 7.4914))
-  const r = await fetch(u, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(4500) })
+  const r = await fetch(u, { headers: { "User-Agent": UA }, signal: AbortSignal.timeout(2500) })
   if (!r.ok) throw new Error(`photon ${r.status}`)
   const data = (await r.json()) as { features: PhotonFeature[] }
   return data.features.map((f) => {
@@ -132,7 +132,7 @@ async function nominatimSearch(q: string): Promise<Result[]> {
 function dedupe(items: Result[]) {
   const seen = new Set<string>()
   return items.filter((x) => {
-    const k = `${x.name.toLowerCase()}|${x.lat.toFixed(3)}|${x.lng.toFixed(3)}`
+    const k = `${x.name.toLowerCase()}|${x.lat.toFixed(2)}|${x.lng.toFixed(2)}`
     if (seen.has(k)) return false
     seen.add(k)
     return true
@@ -188,15 +188,13 @@ export async function GET(req: NextRequest) {
   const hit = cached<Result[]>(key)
   if (hit) return json({ results: hit })
 
-  let results: Result[] = []
-  try {
-    results = await photonSearch(q, lat, lon)
-  } catch {}
-  if (!results.length) {
-    try {
-      results = await nominatimSearch(q)
-    } catch {}
-  }
+  // Ask both services at once. Photon (komoot) is often slow or down, so it gets a short leash
+  // and never holds up Nominatim's answer for long.
+  const [photon, nominatim] = await Promise.allSettled([photonSearch(q, lat, lon), nominatimSearch(q)])
+  let results = [
+    ...(photon.status === "fulfilled" ? photon.value : []),
+    ...(nominatim.status === "fulfilled" ? nominatim.value : []),
+  ]
   results = dedupe(results).slice(0, 8)
   if (results.length) remember(key, results)
   return json({ results })
