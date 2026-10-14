@@ -1,171 +1,184 @@
 "use client"
 
-import { useCallback } from "react"
+import { useEffect, useRef, useState } from "react"
+import {
+  IconArrowLeft,
+  IconArrowRight,
+  IconCheck,
+  IconCurrentLocation,
+  IconVolume,
+  IconVolumeOff,
+  IconX,
+} from "@tabler/icons-react"
 import { useAppStore } from "@/lib/store"
 import { useTTS } from "@/hooks/use-tts"
-import { modeIcon } from "@/lib/format"
-import { getCloudVoices } from "@/lib/tts-config"
+import { duration, fareText, MODE_META } from "@/lib/format"
+import { km } from "@/lib/geo"
+import { ModeBadge } from "@/components/mode-icon"
+import { Timeline } from "@/components/results-panel"
+
+/** How close (km) you need to be to the end of a leg for Along to move to the next step. */
+const ARRIVAL_KM = 0.12
 
 export function NavigationPanel() {
-  const panel = useAppStore((s) => s.panel)
   const routes = useAppStore((s) => s.routes)
   const selected = useAppStore((s) => s.selected)
   const navStep = useAppStore((s) => s.navStep)
-  const paused = useAppStore((s) => s.paused)
   const voice = useAppStore((s) => s.voice)
-  const voiceName = useAppStore((s) => s.voiceName)
   const setNavStep = useAppStore((s) => s.setNavStep)
-  const setPaused = useAppStore((s) => s.setPaused)
   const setVoice = useAppStore((s) => s.setVoice)
-  const setVoiceName = useAppStore((s) => s.setVoiceName)
   const setPanel = useAppStore((s) => s.setPanel)
-  const showToast = useAppStore((s) => s.showToast)
-
+  const setUserLocation = useAppStore((s) => s.setUserLocation)
   const { speak, cancel } = useTTS()
+  const [tracking, setTracking] = useState<"off" | "on" | "denied">("off")
 
   const journey = routes[selected]
+  const total = journey?.legs.length ?? 0
   const leg = journey?.legs[navStep]
-  const totalLegs = journey?.legs.length ?? 0
-  const isComplete = !leg
+  const done = !leg
 
-  const handleNextStep = useCallback(() => {
-    if (paused) {
-      showToast("Resume the trip first.")
-      return
-    }
-    if (!leg) return
+  // Speak each step as it becomes current.
+  const spokenRef = useRef("")
+  useEffect(() => {
+    const key = `${journey?.id}#${navStep}`
+    if (!journey || spokenRef.current === key) return
+    spokenRef.current = key
+    const l = journey.legs[navStep]
+    if (l) speak(`${navStep === 0 ? "Let's go. " : ""}${l.text}${l.fare ? ` Fare is about ${l.fare[0]} to ${l.fare[1]} naira.` : ""}`)
+    else speak(`You have arrived at ${journey.destination.name}.`)
+  }, [journey, navStep, speak])
 
-    const nextStep = navStep + 1
-    setNavStep(nextStep)
+  // Follow the user's GPS and move on when they reach the end of the current leg.
+  useEffect(() => {
+    if (!journey || !navigator.geolocation) return
+    const id = navigator.geolocation.watchPosition(
+      (p) => {
+        const here = { lat: p.coords.latitude, lng: p.coords.longitude }
+        setUserLocation({ ...here, accuracy: p.coords.accuracy })
+        setTracking("on")
+        const { navStep: step } = useAppStore.getState()
+        const current = journey.legs[step]
+        if (!current) return
+        const end = current.coords[current.coords.length - 1]
+        if (km(here, { lat: end[0], lng: end[1] }) < Math.max(ARRIVAL_KM, (p.coords.accuracy || 0) / 1000)) {
+          useAppStore.getState().setNavStep(step + 1)
+        }
+      },
+      () => setTracking("denied"),
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 },
+    )
+    return () => navigator.geolocation.clearWatch(id)
+  }, [journey, setUserLocation])
 
-    const nextLeg = journey?.legs[nextStep]
-    if (nextLeg) {
-      speak(`You've reached ${leg.to}. ${nextLeg.text}`)
-    } else {
-      speak(`You've arrived at ${journey?.destination.name}.`)
-    }
-  }, [navStep, paused, leg, journey, setNavStep, speak, showToast])
+  if (!journey) return null
 
-  const handleStart = useCallback(() => {
-    setNavStep(0)
-    setPaused(false)
-    setPanel("navigation")
-    if (journey?.legs[0]) {
-      speak(`Navigation started. ${journey.legs[0].text}`)
-    }
-  }, [setNavStep, setPaused, setPanel, journey, speak])
-
-  const handleClose = useCallback(() => {
-    setPanel("results")
+  const end = () => {
     cancel()
-  }, [setPanel, cancel])
+    setPanel("results")
+  }
 
-  const handleVoiceChange = useCallback(
-    (value: string) => {
-      setVoiceName(value)
-      localStorage.setItem("alongVoice", value)
-    },
-    [setVoiceName],
-  )
-
-  if (panel !== "navigation") return null
-
-  const progress = Math.max(12, (navStep / totalLegs) * 100)
+  const meta = leg ? MODE_META[leg.mode] : null
+  const remaining = journey.legs.slice(navStep).reduce((s, l) => s + l.time, 0)
 
   return (
-    <section className="navigation-panel" id="navigationPanel">
-      <div className="nav-handle mx-auto mb-3 h-1 w-10 rounded-full bg-line" />
-
-      <div className="flex items-center justify-between">
-        <span className="live-chip flex items-center gap-1.5 rounded-full bg-ink px-3 py-1 text-[10px] font-bold text-white">
-          <i className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-green" />
-          DEMO LIVE
-        </span>
-
-        <div className="nav-tools flex items-center gap-2">
-          <select
-            aria-label="Navigation voice"
-            value={voiceName}
-            onChange={(e) => handleVoiceChange(e.target.value)}
-            className="rounded-lg border border-line bg-white px-2 py-1 text-xs font-bold"
-          >
-            <option value="browser">Device voice</option>
-            {getCloudVoices().map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.label}
-              </option>
-            ))}
-          </select>
-
-          <button
-            type="button"
-            onClick={() => setVoice(!voice)}
-            className="icon-btn light flex h-8 w-8 items-center justify-center rounded-xl border border-line bg-white text-sm"
-            aria-label="Toggle voice"
-          >
-            {voice ? "\uD83D\uDD0A" : "\uD83D\uDD07"}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleClose}
-            className="icon-btn light flex h-8 w-8 items-center justify-center rounded-xl border border-line bg-white text-sm"
-            aria-label="Close navigation"
-          >
-            &times;
-          </button>
-        </div>
-      </div>
-
-      <div className="nav-next mt-4 text-xs font-bold text-muted-foreground">
-        NEXT ·{" "}
-        <span id="navStepNumber">
-          {isComplete ? "COMPLETE" : `${navStep + 1} OF ${totalLegs}`}
-        </span>
-      </div>
-
-      <div className="nav-instruction mt-3 flex gap-3">
-        <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-muted text-lg">
-          {isComplete ? "\u2713" : modeIcon(leg!.mode)}
-        </div>
-        <div>
-          <h2 className="text-lg font-extrabold">
-            {isComplete ? "You've arrived" : leg!.text}
-          </h2>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {isComplete
-              ? journey?.destination.name
-              : leg!.distance
-                ? `${leg!.distance} metres away`
-                : `About ${leg!.time} minutes`}
-          </p>
-        </div>
-      </div>
-
-      <div className="progress-track mt-4 h-2 overflow-hidden rounded-full bg-muted">
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-2">
         <span
-          id="navProgress"
-          className="block h-full rounded-full bg-green transition-all duration-500"
-          style={{ width: `${progress}%` }}
-        />
+          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+            tracking === "on" ? "bg-brand/50 text-green-dark" : "bg-paper text-ink/60"
+          }`}
+        >
+          <IconCurrentLocation size={13} />
+          {tracking === "on" ? "Following your location" : tracking === "denied" ? "GPS off — tap Next as you go" : "Waiting for GPS…"}
+        </span>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              if (voice) cancel()
+              setVoice(!voice)
+            }}
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-white text-ink hover:bg-ink hover:text-white"
+            aria-label={voice ? "Mute voice" : "Turn voice on"}
+          >
+            {voice ? <IconVolume size={17} /> : <IconVolumeOff size={17} />}
+          </button>
+          <button
+            type="button"
+            onClick={end}
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-line bg-white text-ink hover:bg-ink hover:text-white"
+            aria-label="End trip"
+          >
+            <IconX size={17} />
+          </button>
+        </div>
       </div>
 
-      <div className="nav-controls mt-4 grid grid-cols-[92px_1fr] gap-2">
+      <div className="rounded-2xl p-4 text-white" style={{ background: done ? "#12140f" : meta!.color }}>
+        <div className="flex items-start gap-3">
+          {done ? (
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand text-green-dark">
+              <IconCheck size={22} />
+            </span>
+          ) : (
+            <span className="rounded-full bg-white p-1">
+              <ModeBadge mode={leg!.mode} size={32} />
+            </span>
+          )}
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-white/75">
+              {done ? "Arrived" : `Step ${navStep + 1} of ${total} · ${meta!.label}`}
+            </div>
+            <h2 className="mt-0.5 text-lg font-bold leading-snug">{done ? journey.destination.name : leg!.text}</h2>
+            {!done && leg!.tip && <p className="mt-1.5 text-[13px] leading-relaxed text-white/85">{leg!.tip}</p>}
+            {!done && (
+              <div className="mt-2 flex gap-3 text-xs font-semibold text-white/90">
+                <span>{duration(leg!.time)}</span>
+                {leg!.fare && <span>{fareText(leg!.fare)}</span>}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-1.5 flex justify-between text-[11px] font-medium text-ink/55">
+          <span>{done ? "Trip complete" : `About ${duration(remaining)} to go`}</span>
+          <span>{fareText(journey.fare)} total</span>
+        </div>
+        <div className="flex gap-1">
+          {journey.legs.map((l, i) => (
+            <span
+              key={i}
+              className="h-1.5 flex-1 rounded-full transition-colors"
+              style={{ background: i < navStep ? MODE_META[l.mode].color : i === navStep ? `${MODE_META[l.mode].color}66` : "#e2e3dc" }}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-[auto_1fr] gap-2">
         <button
           type="button"
-          onClick={() => setPaused(!paused)}
-          className="secondary-btn rounded-xl border border-line bg-white px-4 py-2.5 text-xs font-bold text-ink hover:bg-[#ececea]"
+          disabled={navStep === 0}
+          onClick={() => setNavStep(Math.max(0, navStep - 1))}
+          className="flex h-11 items-center justify-center gap-1 rounded-xl border border-line bg-white px-4 text-sm font-semibold text-ink hover:bg-ink hover:text-white disabled:pointer-events-none disabled:opacity-40"
         >
-          {paused ? "Resume" : "Pause"}
+          <IconArrowLeft size={16} /> Back
         </button>
         <button
           type="button"
-          onClick={isComplete ? handleClose : handleNextStep}
-          className="primary-btn compact flex items-center justify-center gap-1 rounded-xl bg-ink px-4 py-2.5 text-xs font-bold text-white hover:bg-[#2a2b2a]"
+          onClick={done ? end : () => setNavStep(navStep + 1)}
+          className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-ink text-sm font-semibold text-white hover:bg-black"
         >
-          {isComplete ? "Trip complete" : "Simulate next step"} <span>&rarr;</span>
+          {done ? "Finish" : navStep === total - 1 ? "I've arrived" : "Next step"}
+          {!done && <IconArrowRight size={16} className="text-brand" />}
         </button>
       </div>
-    </section>
+
+      <section className="rounded-2xl border border-line bg-white p-4">
+        <Timeline journey={journey} current={navStep} />
+      </section>
+    </div>
   )
 }

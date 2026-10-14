@@ -1,391 +1,333 @@
 "use client"
 
-import { useEffect, useRef, useCallback } from "react"
-import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from "react-leaflet"
+import { useEffect, useRef, useState } from "react"
+import { MapContainer, TileLayer, useMap, useMapEvents } from "react-leaflet"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { HUBS, LINKS, HUB_MAP } from "@/lib/network"
-import { useAppStore } from "@/lib/store"
+import { IconCurrentLocation, IconX } from "@tabler/icons-react"
+import { CORRIDORS, HUBS, HUB_MAP } from "@/lib/network"
+import { locateOnce, useAppStore } from "@/lib/store"
 import { reverseGeocode } from "@/lib/geocode"
-import { ABUJA_CENTER } from "@/lib/format"
-import type { GeoPoint } from "@/lib/types"
+import { legGeometry } from "@/lib/directions"
+import { ABUJA_CENTER, ABUJA_BOUNDS } from "@/lib/geo"
+import { MODE_META } from "@/lib/format"
+import type { GeoPoint, Journey } from "@/lib/types"
 
 const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 
-function hubIcon() {
-  return L.divIcon({
+/* ----------------------------- icons ----------------------------- */
+
+const originIcon = () =>
+  L.divIcon({ className: "", html: `<span class="pin-origin"></span>`, iconSize: [22, 22], iconAnchor: [11, 11] })
+
+const destIcon = () =>
+  L.divIcon({
     className: "",
-    html: `<span class="along-marker" style="--marker:#171817"><i></i></span>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    html: `<span class="pin-dest"><svg viewBox="0 0 24 24" width="30" height="30"><path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7Z" fill="#6247d8" stroke="#fff" stroke-width="1.6"/><circle cx="12" cy="9" r="2.6" fill="#fff"/></svg></span>`,
+    iconSize: [30, 30],
+    iconAnchor: [15, 28],
   })
-}
 
-function originIcon() {
-  return L.divIcon({
+const stopIcon = (color: string) =>
+  L.divIcon({
     className: "",
-    html: `<span class="along-marker" style="--marker:#b8f04a"><i></i></span>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
+    html: `<span class="pin-stop" style="--c:${color}"></span>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
   })
+
+const hubIcon = () => L.divIcon({ className: "", html: `<span class="pin-hub"></span>`, iconSize: [10, 10], iconAnchor: [5, 5] })
+
+const userIcon = () =>
+  L.divIcon({ className: "", html: `<span class="pin-user"></span>`, iconSize: [18, 18], iconAnchor: [9, 9] })
+
+/** Keep routes clear of the panel: left panel on desktop, bottom sheet on phones. */
+function fitPadding(): L.FitBoundsOptions {
+  if (window.innerWidth >= 768) return { paddingTopLeft: [440, 40], paddingBottomRight: [40, 40] }
+  const sheet = document.querySelector(".sheet")?.getBoundingClientRect().height ?? window.innerHeight * 0.5
+  // Never squeeze the visible map below ~140px, even when the sheet is tall.
+  const bottom = Math.min(sheet + 16, window.innerHeight - 140 - 70)
+  return { paddingTopLeft: [24, 70], paddingBottomRight: [24, Math.round(bottom)] }
 }
 
-function destIcon() {
-  return L.divIcon({
-    className: "",
-    html: `<span class="along-marker" style="--marker:#8a72e8"><i></i></span>`,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-  })
-}
+/* --------------------------- network layer --------------------------- */
 
-const MODE_COLORS: Record<string, string> = {
-  bus: "#8a72e8",
-  keke: "#d08a3d",
-  taxi: "#69716b",
-}
-
-function NetworkOverlay() {
+function NetworkLayer() {
   const map = useMap()
-  const controlRef = useRef<L.Control | null>(null)
 
   useEffect(() => {
-    const networkLayer = L.layerGroup()
-    const hubLayer = L.layerGroup()
-
-    LINKS.forEach((e) => {
-      const a = HUB_MAP[e.a]
-      const b = HUB_MAP[e.b]
-      if (!a || !b) return
-      L.polyline(
-        [
-          [a.lat, a.lng],
-          [b.lat, b.lng],
-        ],
-        {
-          color: MODE_COLORS[e.mode] || "#69716b",
-          weight: 3,
-          opacity: 0.2,
-          dashArray: e.mode === "taxi" ? "5 8" : undefined,
-        },
-      ).addTo(networkLayer)
-    })
-
-    HUBS.forEach((h) => {
-      L.marker([h.lat, h.lng], { icon: hubIcon() })
-        .bindTooltip(h.name, { direction: "top" })
-        .addTo(hubLayer)
-    })
-
-    networkLayer.addTo(map)
-    hubLayer.addTo(map)
-
-    const layers = L.control.layers(
-      undefined,
-      {
-        "Prototype transport routes": networkLayer,
-        "Transport hubs": hubLayer,
-      },
-      { collapsed: true, position: "topright" },
+    const stops = L.layerGroup()
+    const lines = L.layerGroup()
+    HUBS.forEach((h) =>
+      L.marker([h.lat, h.lng], { icon: hubIcon(), keyboard: false })
+        .bindTooltip(`<b>${h.name}</b><br/><span>${h.kind}</span>`, { direction: "top", offset: [0, -4] })
+        .addTo(stops),
     )
-    layers.addTo(map)
-    controlRef.current = layers
+    CORRIDORS.forEach((c) => {
+      const pts = c.stops.map((id) => [HUB_MAP[id].lat, HUB_MAP[id].lng] as [number, number])
+      L.polyline(pts, { color: MODE_META[c.mode].color, weight: 3, opacity: 0.35 }).bindTooltip(c.name).addTo(lines)
+    })
+
+    // Stops only make sense once you've zoomed in a little.
+    const sync = () => {
+      if (map.getZoom() >= 12) stops.addTo(map)
+      else stops.remove()
+    }
+    sync()
+    map.on("zoomend", sync)
+
+    const control = L.control
+      .layers(undefined, { "Along stops & parks": stops, "Bus & cab lines": lines }, { position: "topright" })
+      .addTo(map)
 
     return () => {
-      layers.remove()
-      controlRef.current = null
-      map.removeLayer(networkLayer)
-      map.removeLayer(hubLayer)
+      map.off("zoomend", sync)
+      control.remove()
+      stops.remove()
+      lines.remove()
     }
   }, [map])
 
   return null
 }
 
-function RouteOverlay() {
+/* ---------------------------- route layer ---------------------------- */
+
+function drawJourney(group: L.FeatureGroup, r: Journey, lines: [number, number][][], activeLeg: number | null) {
+  group.clearLayers()
+  r.legs.forEach((l, i) => {
+    const color = MODE_META[l.mode].color
+    const faded = activeLeg !== null && i !== activeLeg
+    const pts = lines[i] ?? l.coords
+    if (l.mode === "walk") {
+      L.polyline(pts, { color, weight: 5, dashArray: "1 9", lineCap: "round", opacity: faded ? 0.35 : 1 }).addTo(group)
+    } else {
+      L.polyline(pts, { color: "#ffffff", weight: 10, opacity: faded ? 0.5 : 1 }).addTo(group)
+      L.polyline(pts, { color, weight: 6, opacity: faded ? 0.35 : 1 })
+        .bindTooltip(`${MODE_META[l.mode].label}: ${l.from} → ${l.to}`, { sticky: true })
+        .addTo(group)
+    }
+    if (i > 0) {
+      const [lat, lng] = l.coords[0]
+      L.marker([lat, lng], { icon: stopIcon(color) }).bindTooltip(l.from, { direction: "top" }).addTo(group)
+    }
+  })
+  L.marker([r.origin.lat, r.origin.lng], { icon: originIcon(), zIndexOffset: 500 }).bindTooltip(r.origin.name).addTo(group)
+  L.marker([r.destination.lat, r.destination.lng], { icon: destIcon(), zIndexOffset: 600 })
+    .bindTooltip(r.destination.name)
+    .addTo(group)
+}
+
+function RouteLayer() {
   const map = useMap()
   const routes = useAppStore((s) => s.routes)
   const selected = useAppStore((s) => s.selected)
-  const layerRef = useRef<L.FeatureGroup | null>(null)
+  const panel = useAppStore((s) => s.panel)
+  const navStep = useAppStore((s) => s.navStep)
+  const groupRef = useRef<L.FeatureGroup | null>(null)
+  const linesRef = useRef<{ id: string; lines: [number, number][][] } | null>(null)
 
+  const r = panel === "planner" ? undefined : routes[selected]
+  const activeLeg = panel === "navigation" && r && navStep < r.legs.length ? navStep : null
+
+  // Draw straight lines immediately, then swap in road geometry as it arrives.
   useEffect(() => {
-    if (layerRef.current) {
-      map.removeLayer(layerRef.current)
-      layerRef.current = null
+    const group = (groupRef.current ??= L.featureGroup().addTo(map))
+    if (!r) {
+      group.clearLayers()
+      return
     }
-
-    const r = routes[selected]
-    if (!r) return
-
-    const group: L.Layer[] = []
-    const fg = L.featureGroup().addTo(map)
-    layerRef.current = fg
-
-    // Render straight lines immediately as fallback
-    r.legs.forEach((l) => {
-      const color =
-        l.mode === "walk"
-          ? "#171817"
-          : l.mode === "bus"
-            ? "#8067e6"
-            : l.mode === "keke"
-              ? "#d48635"
-              : "#65706a"
-      group.push(
-        L.polyline(l.coords, {
-          color,
-          weight: l.mode === "walk" ? 5 : 7,
-          dashArray: l.mode === "walk" ? "3 10" : undefined,
-          opacity: 0.95,
-        }),
-      )
-    })
-
-    group.push(L.marker([r.origin.lat, r.origin.lng], { icon: originIcon() }).bindTooltip("Start"))
-    group.push(
-      L.marker([r.destination.lat, r.destination.lng], { icon: destIcon() }).bindTooltip("Destination"),
-    )
-
-    group.forEach((l) => l.addTo(fg))
-    map.fitBounds(fg.getBounds().pad(0.22))
-
-    // Fetch ORS road geometry for each leg asynchronously
     let cancelled = false
-    const profiles: Record<string, string> = { walk: "foot-walking", bus: "driving-car", keke: "driving-car", taxi: "driving-car" }
+    const known = linesRef.current?.id === r.id ? linesRef.current.lines : r.legs.map((l) => l.coords)
+    drawJourney(group, r, known, null)
+    map.fitBounds(group.getBounds(), fitPadding())
 
-    ;(async () => {
-      const legGeometries = await Promise.all(
-        r.legs.map(async (l) => {
-          const profile = profiles[l.mode] || "foot-walking"
-          try {
-            const res = await fetch("/api/directions", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                coordinates: l.coords.map((c) => [c[1], c[0]]),
-                profile,
-              }),
-            })
-            if (res.ok) {
-              const data = await res.json()
-              const coords = data.geometry?.coordinates as [number, number][] | undefined
-              if (coords && coords.length > 0) {
-                return coords.map((c) => [c[1], c[0]] as [number, number])
-              }
-            }
-          } catch {}
-          return l.coords
-        }),
-      )
-
-      if (cancelled) return
-
-      // Replace straight lines with road geometry
-      group.forEach((l) => fg.removeLayer(l))
-      group.length = 0
-
-      r.legs.forEach((l, i) => {
-        const color =
-          l.mode === "walk"
-            ? "#171817"
-            : l.mode === "bus"
-              ? "#8067e6"
-              : l.mode === "keke"
-                ? "#d48635"
-                : "#65706a"
-        const polyline = L.polyline(legGeometries[i], {
-          color,
-          weight: l.mode === "walk" ? 5 : 7,
-          dashArray: l.mode === "walk" ? "3 10" : undefined,
-          opacity: 0.95,
-        })
-        polyline.addTo(fg)
-        group.push(polyline)
+    if (linesRef.current?.id !== r.id) {
+      Promise.all(r.legs.map(legGeometry)).then((lines) => {
+        if (cancelled) return
+        linesRef.current = { id: r.id, lines }
+        drawJourney(group, r, lines, useAppStore.getState().panel === "navigation" ? useAppStore.getState().navStep : null)
       })
-
-      group.push(L.marker([r.origin.lat, r.origin.lng], { icon: originIcon() }).bindTooltip("Start"))
-      group.push(
-        L.marker([r.destination.lat, r.destination.lng], { icon: destIcon() }).bindTooltip("Destination"),
-      )
-      group.forEach((l) => l.addTo(fg))
-      map.fitBounds(fg.getBounds().pad(0.22))
-    })()
-
+    }
     return () => {
       cancelled = true
-      if (layerRef.current) {
-        map.removeLayer(layerRef.current)
-        layerRef.current = null
-      }
     }
-  }, [map, routes, selected])
+  }, [map, r])
 
-  return null
-}
-
-function NavOverlay() {
-  const map = useMap()
-  const routes = useAppStore((s) => s.routes)
-  const selected = useAppStore((s) => s.selected)
-  const navStep = useAppStore((s) => s.navStep)
-  const panel = useAppStore((s) => s.panel)
-
+  // During a trip, highlight and zoom to the current leg.
   useEffect(() => {
-    if (panel !== "navigation") return
-    const r = routes[selected]
-    if (!r) return
-    const leg = r.legs[navStep]
-    if (!leg) return
-    map.fitBounds(L.latLngBounds(leg.coords).pad(0.8))
-  }, [map, routes, selected, navStep, panel])
+    const group = groupRef.current
+    if (!group || !r) return
+    const lines = linesRef.current?.id === r.id ? linesRef.current.lines : r.legs.map((l) => l.coords)
+    drawJourney(group, r, lines, activeLeg)
+    if (activeLeg !== null) map.fitBounds(L.latLngBounds(lines[activeLeg] ?? r.legs[activeLeg].coords), { ...fitPadding(), maxZoom: 16 })
+  }, [map, r, activeLeg])
+
+  useEffect(
+    () => () => {
+      groupRef.current?.remove()
+      groupRef.current = null
+    },
+    [],
+  )
 
   return null
 }
 
-function MapControls() {
-  const map = useMap()
+/* --------------------- chosen points & user location --------------------- */
 
-  useEffect(() => {
-    const zoom = L.control.zoom({ position: "topright" })
-    zoom.addTo(map)
-
-    return () => {
-      zoom.remove()
-    }
-  }, [map])
-
-  return null
-}
-
-function PickMarkers() {
+function PointsLayer() {
   const map = useMap()
   const origin = useAppStore((s) => s.origin)
   const destination = useAppStore((s) => s.destination)
-  const layerRef = useRef<L.LayerGroup | null>(null)
+  const panel = useAppStore((s) => s.panel)
+  const user = useAppStore((s) => s.userLocation)
 
   useEffect(() => {
-    if (layerRef.current) {
-      map.removeLayer(layerRef.current)
-      layerRef.current = null
+    if (panel !== "planner") return
+    const group = L.featureGroup()
+    if (origin) L.marker([origin.lat, origin.lng], { icon: originIcon() }).bindTooltip(origin.name).addTo(group)
+    if (destination) L.marker([destination.lat, destination.lng], { icon: destIcon() }).bindTooltip(destination.name).addTo(group)
+    group.addTo(map)
+    if (origin && destination) map.fitBounds(group.getBounds(), { ...fitPadding(), maxZoom: 15 })
+    else if (origin || destination) {
+      const p = L.latLng((origin ?? destination)!.lat, (origin ?? destination)!.lng)
+      map.fitBounds(L.latLngBounds(p, p), { ...fitPadding(), maxZoom: Math.max(map.getZoom(), 14) })
     }
-
-    const group = L.layerGroup()
-
-    if (origin && origin.type === "pin") {
-      L.marker([origin.lat, origin.lng], { icon: originIcon() })
-        .bindTooltip("Origin")
-        .addTo(group)
-    }
-    if (destination && destination.type === "pin") {
-      L.marker([destination.lat, destination.lng], { icon: destIcon() })
-        .bindTooltip("Destination")
-        .addTo(group)
-    }
-
-    if (origin || destination) {
-      group.addTo(map)
-      layerRef.current = group
-    }
-
     return () => {
-      if (layerRef.current) {
-        map.removeLayer(layerRef.current)
-        layerRef.current = null
-      }
+      group.remove()
     }
-  }, [map, origin, destination])
+  }, [map, origin, destination, panel])
+
+  useEffect(() => {
+    if (!user) return
+    const group = L.layerGroup([
+      L.circle([user.lat, user.lng], { radius: Math.min(user.accuracy, 300), color: "#2f6fed", weight: 1, fillOpacity: 0.1 }),
+      L.marker([user.lat, user.lng], { icon: userIcon(), interactive: false, zIndexOffset: 1000 }),
+    ]).addTo(map)
+    return () => {
+      group.remove()
+    }
+  }, [map, user])
 
   return null
 }
 
-function ClickHandler() {
-  const pickMode = useAppStore((s) => s.pickMode)
-  const pickModeRef = useRef(pickMode)
-  pickModeRef.current = pickMode
+function ClickToPick() {
+  const pickModeRef = useRef(useAppStore.getState().pickMode)
+  useEffect(() => useAppStore.subscribe((s) => (pickModeRef.current = s.pickMode)), [])
 
   useMapEvents({
     click: async (e) => {
       const mode = pickModeRef.current
       if (!mode) return
       const { lat, lng } = e.latlng
-      const name = await reverseGeocode(lat, lng)
-      const point: GeoPoint = { name, lat, lng, type: "pin" }
-
-      if (mode === "origin") {
-        useAppStore.getState().setOrigin(point)
-      } else {
-        useAppStore.getState().setDestination(point)
-      }
-      useAppStore.getState().setPickMode(null)
-      useAppStore.getState().showToast(`${mode === "origin" ? "Origin" : "Destination"} set`)
+      const store = useAppStore.getState()
+      store.setPickMode(null)
+      const pin: GeoPoint = { name: "Dropped pin", detail: "Finding address…", lat, lng, type: "pin" }
+      if (mode === "origin") store.setOrigin(pin)
+      else store.setDestination(pin)
+      const where = await reverseGeocode(lat, lng)
+      const named: GeoPoint = { ...pin, name: where.name, detail: where.detail }
+      const now = useAppStore.getState()
+      if (mode === "origin" && now.origin === pin) now.setOrigin(named)
+      if (mode === "destination" && now.destination === pin) now.setDestination(named)
     },
   })
-
   return null
 }
 
-function MapResizer() {
+function LocateButton() {
   const map = useMap()
-  const ref = useRef<InstanceType<typeof globalThis.ResizeObserver> | null>(null)
-
+  const showToast = useAppStore((s) => s.showToast)
+  const ref = useRef<HTMLButtonElement>(null)
+  // The button lives inside the map container; stop its clicks from dropping pins.
   useEffect(() => {
-    const container = map.getContainer()
-    ref.current = new globalThis.ResizeObserver(() => map.invalidateSize())
-    ref.current.observe(container)
-    return () => ref.current?.disconnect()
-  }, [map])
+    if (ref.current) L.DomEvent.disableClickPropagation(ref.current)
+  }, [])
+  return (
+    <button
+      ref={ref}
+      type="button"
+      onClick={async () => {
+        const loc = await locateOnce()
+        if (!loc) return showToast("Couldn't get your location. Check that location access is allowed.")
+        const p = L.latLng(loc.lat, loc.lng)
+        map.fitBounds(L.latLngBounds(p, p), { ...fitPadding(), maxZoom: 16 })
+      }}
+      className="map-locate"
+      aria-label="Show my location"
+      title="Show my location"
+    >
+      <IconCurrentLocation size={20} />
+    </button>
+  )
+}
 
-  return null
+/* ------------------------------- map ------------------------------- */
+
+/** Start centred on Abuja within the part of the screen the panel doesn't cover. */
+function initialCenter(): [number, number] {
+  const degPerPx = 360 / (256 * 2 ** 12) // at the initial zoom
+  if (window.innerWidth >= 768) return [ABUJA_CENTER[0], ABUJA_CENTER[1] - 220 * degPerPx]
+  return [ABUJA_CENTER[0] - window.innerHeight * 0.3 * degPerPx, ABUJA_CENTER[1]]
 }
 
 export function MapView() {
   const pickMode = useAppStore((s) => s.pickMode)
+  const setPickMode = useAppStore((s) => s.setPickMode)
+  const [center] = useState(initialCenter)
 
   return (
-    <div className={`map-stage ${pickMode ? "picking" : ""}`}>
+    <div className={`absolute inset-0 ${pickMode ? "map-picking" : ""}`}>
       <MapContainer
-        center={ABUJA_CENTER}
+        center={center}
         zoom={12}
         minZoom={9}
+        maxBounds={[
+          [ABUJA_BOUNDS.south - 0.3, ABUJA_BOUNDS.west - 0.3],
+          [ABUJA_BOUNDS.north + 0.3, ABUJA_BOUNDS.east + 0.3],
+        ]}
         zoomControl={false}
+        attributionControl={false}
         className="h-full w-full"
       >
-        <TileLayer
-          url={TILE_URL}
-          maxZoom={19}
-          attribution='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
-        />
-        <NetworkOverlay />
-        <MapControls />
-        <PickMarkers />
-        <RouteOverlay />
-        <NavOverlay />
-        <ClickHandler />
-        <MapResizer />
+        <TileLayer url={TILE_URL} maxZoom={19} />
+        <AttributionAndZoom />
+        <NetworkLayer />
+        <PointsLayer />
+        <RouteLayer />
+        <ClickToPick />
+        <LocateButton />
       </MapContainer>
 
       {pickMode && (
         <div className="pick-banner">
-          Tap anywhere on the map to set <b>{pickMode}</b>
-          <button onClick={() => useAppStore.getState().setPickMode(null)}>Cancel</button>
+          <span>
+            Tap the map to set your <b>{pickMode === "origin" ? "starting point" : "destination"}</b>
+          </span>
+          <button type="button" onClick={() => setPickMode(null)} aria-label="Cancel">
+            <IconX size={16} />
+          </button>
         </div>
       )}
-
-      <button
-        type="button"
-        onClick={() => {
-          const dialog = document.getElementById("settingsDialog") as HTMLDialogElement
-          dialog?.showModal()
-        }}
-        className="absolute left-4 top-4 z-[1000] flex h-11 w-11 items-center justify-center rounded-full border border-black/10 bg-white/92 text-xs font-bold text-ink shadow-md hover:bg-white"
-        aria-label="Voice settings"
-      >
-        TB
-      </button>
-
-      <div className="map-note">
-        <span /> OpenStreetMap · prototype transport network
-      </div>
     </div>
   )
+}
+
+function AttributionAndZoom() {
+  const map = useMap()
+  useEffect(() => {
+    const zoom = L.control.zoom({ position: "topright" }).addTo(map)
+    const attribution = L.control
+      // Bottom-right on desktop; on phones the bottom sheet covers that corner.
+      .attribution({ position: window.innerWidth >= 768 ? "bottomright" : "topleft", prefix: false })
+      .addAttribution('&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>')
+      .addTo(map)
+    return () => {
+      zoom.remove()
+      attribution.remove()
+    }
+  }, [map])
+  return null
 }

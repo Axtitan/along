@@ -8,8 +8,9 @@ export function Toast() {
   return (
     <div
       role="status"
-      className={`fixed bottom-6 left-1/2 z-[9999] -translate-x-1/2 rounded-xl bg-ink px-5 py-3 text-sm font-medium text-white shadow-lg transition-all duration-300 ${
-        toast ? "translate-y-0 opacity-100" : "translate-y-4 opacity-0 pointer-events-none"
+      aria-live="polite"
+      className={`pointer-events-none fixed left-1/2 top-4 z-[3000] w-max max-w-[calc(100%-32px)] -translate-x-1/2 rounded-2xl bg-ink px-4 py-3 text-center text-sm font-medium text-white shadow-[0_12px_32px_rgba(0,0,0,0.25)] transition-all duration-300 ${
+        toast ? "translate-y-0 opacity-100" : "-translate-y-3 opacity-0"
       }`}
     >
       {toast}
