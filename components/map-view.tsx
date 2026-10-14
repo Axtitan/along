@@ -8,7 +8,7 @@ import { IconCurrentLocation, IconX } from "@tabler/icons-react"
 import { CORRIDORS, HUBS, HUB_MAP } from "@/lib/network"
 import { locateOnce, useAppStore } from "@/lib/store"
 import { reverseGeocode } from "@/lib/geocode"
-import { legGeometry } from "@/lib/directions"
+import { legRoute } from "@/lib/directions"
 import { ABUJA_CENTER, ABUJA_BOUNDS } from "@/lib/geo"
 import { MODE_META } from "@/lib/format"
 import type { GeoPoint, Journey } from "@/lib/types"
@@ -143,7 +143,8 @@ function RouteLayer() {
     map.fitBounds(group.getBounds(), fitPadding())
 
     if (linesRef.current?.id !== r.id) {
-      Promise.all(r.legs.map(legGeometry)).then((lines) => {
+      Promise.all(r.legs.map(legRoute)).then((routes) => {
+        const lines = routes.map((x) => x.line)
         if (cancelled) return
         linesRef.current = { id: r.id, lines }
         drawJourney(group, r, lines, useAppStore.getState().panel === "navigation" ? useAppStore.getState().navStep : null)

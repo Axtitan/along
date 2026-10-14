@@ -1,10 +1,18 @@
 import type { Leg } from "./types"
 
-const LS_KEY = "along-directions-cache-v2"
+export interface LegRoute {
+  line: [number, number][]
+  /** Main roads in order (vehicle legs) */
+  roads: string[]
+  /** Turn-by-turn instructions (shown for walking legs) */
+  turns: string[]
+}
+
+const LS_KEY = "along-directions-cache-v3"
 const LS_TTL = 7 * 24 * 60 * 60 * 1000
 const MAX_ENTRIES = 150
 
-type Entry = { data: [number, number][]; ts: number }
+type Entry = { data: LegRoute; ts: number }
 
 function loadCache(): Map<string, Entry> {
   try {
@@ -18,6 +26,7 @@ function loadCache(): Map<string, Entry> {
 }
 
 let clientCache: Map<string, Entry> | null = null
+const inflight = new Map<string, Promise<LegRoute>>()
 
 function cache() {
   clientCache ??= loadCache()
@@ -26,42 +35,66 @@ function cache() {
 
 function saveCache() {
   try {
-    const entries = [...cache()].slice(-MAX_ENTRIES)
-    localStorage.setItem(LS_KEY, JSON.stringify(entries))
+    localStorage.setItem(LS_KEY, JSON.stringify([...cache()].slice(-MAX_ENTRIES)))
   } catch {}
 }
 
-/** Road geometry for one leg as [lat, lng][]; falls back to the straight line. */
-export async function legGeometry(leg: Leg): Promise<[number, number][]> {
-  const [a, b] = [leg.coords[0], leg.coords[leg.coords.length - 1]]
-  if (!a || !b || leg.distance < 60) return leg.coords
+function points(leg: Leg) {
+  return leg.waypoints ?? [leg.coords[0], leg.coords[leg.coords.length - 1]]
+}
+
+function keyFor(leg: Leg) {
   const profile = leg.mode === "walk" ? "foot-walking" : "driving-car"
-  const key = `${profile}:${a[0].toFixed(4)},${a[1].toFixed(4)};${b[0].toFixed(4)},${b[1].toFixed(4)}`
+  return `${profile}:${points(leg).map((p) => `${p[0].toFixed(4)},${p[1].toFixed(4)}`).join(";")}`
+}
+
+/** Cached result if we already have it, without a network call. */
+export function cachedLegRoute(leg: Leg): LegRoute | undefined {
+  return cache().get(keyFor(leg))?.data
+}
+
+/** Road geometry, road names and turns for one leg; falls back to the straight line. */
+export async function legRoute(leg: Leg): Promise<LegRoute> {
+  const fallback: LegRoute = { line: leg.coords, roads: [], turns: [] }
+  const pts = points(leg)
+  if (pts.length < 2 || leg.distance < 60) return fallback
+  const key = keyFor(leg)
   const hit = cache().get(key)
   if (hit) return hit.data
+  const pending = inflight.get(key)
+  if (pending) return pending
 
-  try {
-    const res = await fetch("/api/directions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        coordinates: [
-          [a[1], a[0]],
-          [b[1], b[0]],
-        ],
-        profile,
-      }),
-    })
-    if (res.ok) {
-      const data = await res.json()
-      const geo = data.geometry?.coordinates as [number, number][] | undefined
-      if (geo?.length) {
-        const line = geo.map((c) => [c[1], c[0]] as [number, number])
-        cache().set(key, { data: line, ts: Date.now() })
-        saveCache()
-        return line
+  const request = (async () => {
+    try {
+      const res = await fetch("/api/directions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          coordinates: pts.map((p) => [p[1], p[0]]),
+          profile: leg.mode === "walk" ? "foot-walking" : "driving-car",
+        }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        const geo = data.geometry?.coordinates as [number, number][] | undefined
+        if (geo?.length) {
+          const result: LegRoute = {
+            line: geo.map((c) => [c[1], c[0]] as [number, number]),
+            roads: data.roads ?? [],
+            turns: data.turns ?? [],
+          }
+          cache().set(key, { data: result, ts: Date.now() })
+          saveCache()
+          return result
+        }
       }
-    }
-  } catch {}
-  return leg.coords
+    } catch {}
+    return fallback
+  })()
+  inflight.set(key, request)
+  try {
+    return await request
+  } finally {
+    inflight.delete(key)
+  }
 }

@@ -22,6 +22,8 @@ export interface Hub {
   lng: number
   /** Short description of what is there, e.g. "Motor park" or "Bus stop on Kubwa Expressway" */
   kind: string
+  /** Where exactly to stand, e.g. "Berger Bus Stop on Herbert Macaulay Way, beside Berger Park" */
+  board: string
   aliases?: string[]
 }
 
@@ -62,6 +64,12 @@ export interface Leg {
   tip?: string
   coords: [number, number][]
   corridor?: string
+  /** Detailed, ordered instructions for this leg (where to stand, what to say, where to drop) */
+  details: string[]
+  /** Corridor stops passed on the way (excluding board and drop) */
+  via?: string[]
+  /** Points the road route must pass through (lat, lng), boarding point first */
+  waypoints?: [number, number][]
 }
 
 export interface Journey {

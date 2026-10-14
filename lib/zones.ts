@@ -82,6 +82,15 @@ export function zoneOf(p: { lat: number; lng: number }): Zone {
   return "satellite"
 }
 
+/** Name of the area a point falls in (e.g. "Kubwa"), for phrases like "keke around Kubwa". */
+export function areaName(p: { lat: number; lng: number }): string | null {
+  let best: Anchor | null = null
+  for (const a of ANCHORS) {
+    if (km(p, a) <= a.radius && (!best || a.radius < best.radius)) best = a
+  }
+  return best?.name ?? null
+}
+
 export function kekeAllowed(z: Zone) {
   return z !== "core"
 }
