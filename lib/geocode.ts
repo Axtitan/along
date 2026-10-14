@@ -1,117 +1,102 @@
-import type { GeocodeResult } from "./types"
+import type { GeocodeResult, GeoPoint } from "./types"
+import { nearestPlace, searchLocal } from "./places"
+import { km } from "./geo"
 
-const cache = new Map<string, GeocodeResult[]>()
+const remoteCache = new Map<string, GeocodeResult[]>()
 
-function nameFromPhoton(p: Record<string, string | undefined>) {
-  return [p.name, p.street, p.district, p.city, p.state, p.country]
-    .filter(Boolean)
-    .filter((v, i, a) => a.indexOf(v) === i)
-    .slice(0, 4)
-    .join(", ")
-}
+/** Remote search through our proxy (Photon → Nominatim). Abortable so typing cancels stale requests. */
+export async function searchRemote(
+  query: string,
+  near?: { lat: number; lng: number },
+  signal?: AbortSignal,
+): Promise<GeocodeResult[]> {
+  const q = query.trim()
+  if (q.length < 2) return []
+  const key = `${q.toLowerCase()}|${near ? `${near.lat.toFixed(2)},${near.lng.toFixed(2)}` : ""}`
+  const hit = remoteCache.get(key)
+  if (hit) return hit
 
-export async function geocode(query: string): Promise<GeocodeResult[]> {
-  const clean = query.trim()
-  if (cache.has(clean)) return cache.get(clean)!
-
-  // 1. Try our own API proxy
-  try {
-    const u = new URL("/api/geocode", window.location.origin)
-    u.searchParams.set("q", clean)
-    const r = await fetch(u)
-    if (r.ok) {
-      const x = await r.json()
-      if (x.results?.length) {
-        const results = x.results.map((v: GeocodeResult) => ({ ...v, type: "search" }))
-        cache.set(clean, results)
-        return results
-      }
-    }
-  } catch {}
-
-  // 2. Nominatim fallback
-  try {
-    const u = new URL("https://nominatim.openstreetmap.org/search")
-    u.searchParams.set("q", clean)
-    u.searchParams.set("format", "jsonv2")
-    u.searchParams.set("limit", "8")
-    u.searchParams.set("addressdetails", "1")
-    u.searchParams.set("countrycodes", "ng")
-    u.searchParams.set("viewbox", "7.20,9.30,7.75,8.80")
-    u.searchParams.set("bounded", "0")
-    const r = await fetch(u, { headers: { "Accept-Language": "en-NG,en" } })
-    if (r.ok) {
-      const items = (await r.json()).map(
-        (x: { display_name: string; lat: string; lon: string; type: string }) => ({
-          name: x.display_name,
-          lat: +x.lat,
-          lng: +x.lon,
-          type: x.type || "place",
-        }),
-      )
-      if (items.length) {
-        cache.set(clean, items)
-        return items
-      }
-    }
-  } catch {}
-
-  // 3. Photon fallback
-  try {
-    const u = new URL("https://photon.komoot.io/api/")
-    u.searchParams.set("q", clean)
-    u.searchParams.set("limit", "8")
-    u.searchParams.set("lat", "9.0556")
-    u.searchParams.set("lon", "7.4914")
-    u.searchParams.set("lang", "en")
-    const r = await fetch(u)
-    if (r.ok) {
-      const data = await r.json()
-      const items = data.features
-        .filter((x: { properties: { countrycode: string } }) => x.properties.countrycode === "NG")
-        .map(
-          (x: {
-            properties: Record<string, string | undefined>
-            geometry: { coordinates: [number, number] }
-          }) => ({
-            name: nameFromPhoton(x.properties),
-            lat: x.geometry.coordinates[1],
-            lng: x.geometry.coordinates[0],
-            type: x.properties.type || "place",
-          }),
-        )
-      if (items.length) cache.set(clean, items)
-      return items
-    }
-  } catch {}
-
-  return []
-}
-
-export async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  // 1. Try our API proxy
-  try {
-    const u = new URL("/api/geocode", window.location.origin)
-    u.searchParams.set("lat", String(lat))
-    u.searchParams.set("lon", String(lng))
-    const r = await fetch(u)
-    if (r.ok) {
-      const x = await r.json()
-      if (x.results?.[0]) return x.results[0].name
-    }
-  } catch {}
-
-  // 2. Nominatim fallback
-  try {
-    const u = new URL("https://nominatim.openstreetmap.org/reverse")
-    u.searchParams.set("lat", String(lat))
-    u.searchParams.set("lon", String(lng))
-    u.searchParams.set("format", "jsonv2")
-    u.searchParams.set("zoom", "18")
-    const r = await fetch(u, { headers: { "Accept-Language": "en-NG,en" } })
-    const x = await r.json()
-    return x.display_name || "Dropped pin"
-  } catch {
-    return "Dropped pin"
+  const u = new URL("/api/geocode", window.location.origin)
+  u.searchParams.set("q", q)
+  if (near) {
+    u.searchParams.set("lat", near.lat.toFixed(4))
+    u.searchParams.set("lon", near.lng.toFixed(4))
   }
+  const r = await fetch(u, { signal })
+  if (!r.ok) return []
+  const x = (await r.json()) as { results?: Omit<GeocodeResult, "source">[] }
+  const results = (x.results ?? []).map((v) => ({ ...v, source: "search" as const }))
+  remoteCache.set(key, results)
+  return results
+}
+
+/**
+ * Merge instant local matches (hubs, landmarks, districts) with remote results,
+ * dropping remote duplicates that sit on top of a local match.
+ */
+export function mergeResults(local: GeocodeResult[], remote: GeocodeResult[], limit = 7) {
+  const out = [...local]
+  for (const r of remote) {
+    const dup = out.some(
+      (l) => km(l, r) < 0.3 && (l.name.toLowerCase().includes(r.name.toLowerCase()) || r.name.toLowerCase().includes(l.name.toLowerCase())),
+    )
+    if (!dup) out.push(r)
+  }
+  return out.slice(0, limit)
+}
+
+/** Best single match for free text — used when someone presses "Find route" without picking a suggestion. */
+export async function resolvePlace(text: string, near?: { lat: number; lng: number }): Promise<GeoPoint | null> {
+  const local = searchLocal(text, near, 1)
+  const exact = local[0] && local[0].name.toLowerCase() === text.trim().toLowerCase()
+  if (exact) return local[0]
+  try {
+    const remote = await searchRemote(text, near)
+    if (remote[0]) return remote[0]
+  } catch {}
+  return local[0] ?? null
+}
+
+export async function reverseGeocode(lat: number, lng: number): Promise<{ name: string; detail?: string }> {
+  try {
+    const u = new URL("/api/geocode", window.location.origin)
+    u.searchParams.set("lat", lat.toFixed(6))
+    u.searchParams.set("lon", lng.toFixed(6))
+    const r = await fetch(u)
+    if (r.ok) {
+      const x = await r.json()
+      const first = x.results?.[0]
+      if (first?.name) {
+        if (first.precise !== false) return { name: first.name, detail: first.detail }
+        // Street has no name in OpenStreetMap: describe it by the nearest place people know.
+        const near = nearestPlace({ lat, lng })
+        if (near) return { name: near.km < 0.15 ? near.name : `Near ${near.name}`, detail: first.name }
+        return { name: first.name, detail: first.detail }
+      }
+    }
+  } catch {}
+  const near = nearestPlace({ lat, lng })
+  return { name: near ? `Near ${near.name}` : "Dropped pin", detail: `${lat.toFixed(5)}, ${lng.toFixed(5)}` }
+}
+
+/* ------------------------- recent places ------------------------- */
+
+const RECENT_KEY = "along-recent-places"
+
+export function getRecent(): GeocodeResult[] {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY)
+    return raw ? (JSON.parse(raw) as GeocodeResult[]).map((r) => ({ ...r, source: "recent" as const })) : []
+  } catch {
+    return []
+  }
+}
+
+export function saveRecent(p: GeoPoint) {
+  if (p.type === "gps" || p.type === "pin") return
+  try {
+    const list = getRecent().filter((r) => r.name !== p.name)
+    list.unshift({ name: p.name, detail: p.detail, lat: p.lat, lng: p.lng, type: p.type || "place", source: "recent" })
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 6)))
+  } catch {}
 }

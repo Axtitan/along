@@ -3,7 +3,7 @@
   "framework": "nextjs",
   "headers": [
     {
-      "source": "/api/(.*)",
+      "source": "/api/tts",
       "headers": [
         { "key": "Cache-Control", "value": "no-store" }
       ]
